@@ -5,6 +5,8 @@ from leo_vetter.utils import phasefold, weighted_std
 
 
 def phase_and_significance(phase, MES_series):
+    if phase.size == 0 or MES_series.size == 0:
+        return None, np.nan, np.nan
     arg = np.argmax(MES_series)
     phs = phase[arg]
     sig = MES_series[arg]
@@ -24,11 +26,27 @@ def uniqueness(tlc, nTCE=20000):
     # Re-phase light curve to make it easier to work with
     phase = phasefold(tlc.time, tlc.per, tlc.epo)
     phase[phase < 0] += 1
+    # No in-transit points means uniqueness metrics are undefined for this TCE.
+    if not np.any(tlc.in_tran):
+        tlc.metrics["phs_pri"] = phs_pri
+        tlc.metrics["phs_sec"] = phs_sec
+        tlc.metrics["phs_ter"] = phs_ter
+        tlc.metrics["phs_pos"] = phs_pos
+        tlc.metrics["sig_pri"] = sig_pri
+        tlc.metrics["sig_sec"] = sig_sec
+        tlc.metrics["sig_ter"] = sig_ter
+        tlc.metrics["sig_pos"] = sig_pos
+        tlc.metrics["dep_sec"] = dep_sec
+        tlc.metrics["err_sec"] = err_sec
+        tlc.metrics["Fred"] = Fred
+        return
     while True:
         # Primary significance
         _, phs_pri, sig_pri = phase_and_significance(
             phase[tlc.in_tran], tlc.MES_series[tlc.in_tran]
         )
+        if np.isnan(sig_pri):
+            break
         # Secondary significance - at least 2 transit durations from primary
         mask = (abs(phase - phs_pri) < 2 * tlc.qtran) | (
             abs(phase - phs_pri) > 1 - 2 * tlc.qtran

@@ -6,3 +6,11 @@ build/
 # Tutorials
 .ipynb_checkpoints
 *.ipynb_checkpoints
+
+__pycache__/
+*.pyc
+
+.vscode/
+
+results/
+data/

@@ -24,6 +24,17 @@ _default_thresholds = {
     "offset": 15,
 }
 
+
+def _safe_ratio(numerator, denominator):
+    num = np.asarray(numerator, dtype=float)
+    den = np.asarray(denominator, dtype=float)
+    out = np.full(np.broadcast(num, den).shape, np.nan, dtype=float)
+    valid = np.isfinite(den) & (den != 0)
+    np.divide(num, den, out=out, where=valid)
+    if out.shape == ():
+        return float(out)
+    return out
+
 #### False alarm checks ####
 
 
@@ -53,7 +64,7 @@ def bad_shape(metrics, thresholds):
 def non_unique(metrics, thresholds):
     # Checks the uniqueness of the event compared to noise/other events
     message = "FA: events not unique in phased light curve"
-    MS1 = (metrics["sig_pri"] / metrics["Fred"] - metrics["FA1"]) < thresholds["MS1"]
+    MS1 = (_safe_ratio(metrics["sig_pri"], metrics["Fred"]) - metrics["FA1"]) < thresholds["MS1"]
     MS2 = (metrics["sig_pri"] - metrics["sig_ter"] - metrics["FA2"]) < thresholds["MS2"]
     MS3 = (metrics["sig_pri"] - metrics["sig_pos"] - metrics["FA2"]) < thresholds["MS3"]
     return MS1 | MS2 | MS3, message
@@ -76,7 +87,8 @@ def dmm(metrics, thresholds):
 def single_event(metrics, thresholds):
     # Checks for single events dominating the MES
     message = "FA: dominated by single event"
-    return (metrics["max_SES"] / metrics["MES"] > thresholds["max_SES_to_MES"]) & (
+    ratio = _safe_ratio(metrics["max_SES"], metrics["MES"])
+    return (ratio > thresholds["max_SES_to_MES"]) & (
         metrics["N_transit"] <= 10
     ), message
 
@@ -104,8 +116,9 @@ def unphysical_duration(metrics, thresholds):
     # Checks that the orbit is physically realistic
     message = "FA: unphysical transit orbit"
     low_aRs = (metrics["transit_aRs"] < 1.5) | (metrics["aRs"] < 2)
+    q_ratio = _safe_ratio(metrics["q"], metrics["trap_qtran"])
     long_duration = (
-        (metrics["q"] / metrics["trap_qtran"] < 0.6)
+        (q_ratio < 0.6)
         | np.isnan(metrics["sig_sec"])
         | (metrics["trap_qtran"] > 0.5)
     )
@@ -131,9 +144,10 @@ def chi(metrics, thresholds):
 def data_gapped(metrics, thresholds):
     # Checks the number of "good" transits left after removing all the "bad" transits
     message = "FA: too many transits near gaps"
-    return (
-        metrics["N_gap_2.0"] / metrics["N_transit"] >= thresholds["frac_gap"]
-    ), message
+    n_transit = metrics["N_transit"]
+    if (not np.isfinite(n_transit)) or (n_transit <= 0):
+        return False, message
+    return (metrics["N_gap_2.0"] / n_transit >= thresholds["frac_gap"]), message
 
 
 #### Astrophysical false positive checks ####
@@ -171,7 +185,7 @@ def secondary(metrics, thresholds):
     # Checks for the existence of a significant secondary eclipse
     message = "FP: significant secondary"
     MS4 = (
-        (metrics["sig_sec"] / metrics["Fred"] - metrics["FA1"]) > thresholds["MS4"]
+        (_safe_ratio(metrics["sig_sec"], metrics["Fred"]) - metrics["FA1"]) > thresholds["MS4"]
     ) | (metrics["Fred"] > 1.8)
     MS5 = (
         (metrics["sig_sec"] - metrics["sig_ter"] - metrics["FA2"]) > thresholds["MS5"]
@@ -199,6 +213,9 @@ def offset(metrics, thresholds):
 
 
 def check_thresholds(metrics, case, verbose=False, thresholds=_default_thresholds):
+    
+    failed_tests_messages = []
+    
     if case == "FA":
         tests = [
             weak,
@@ -234,8 +251,10 @@ def check_thresholds(metrics, case, verbose=False, thresholds=_default_threshold
         flag, message = test(metrics, thresholds)
         mask |= flag
         if type(metrics) is dict and verbose and flag:
-            print(message)
+            if verbose:
+                print(message)
+            failed_tests_messages.append(message)
     if type(metrics) is dict:
         if verbose and not mask:
             print(f"Passed all {case} tests")
-    return mask
+    return mask, failed_tests_messages

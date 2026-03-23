@@ -18,6 +18,18 @@ def transit_events(tlc, frac=0.7, gap=0.3):
     tlc.rubble = np.zeros(tlc.N_transit)
     tlc.chases = np.zeros(tlc.N_transit)
     tlc.redchi2 = np.zeros(tlc.N_transit)
+    # Handle edge case where no in-transit cadences are present.
+    if tlc.N_transit == 0:
+        tlc.metrics["CHI"] = np.nan
+        tlc.metrics["med_chases"] = np.nan
+        tlc.metrics["mean_chases"] = np.nan
+        tlc.metrics["max_SES"] = np.nan
+        tlc.metrics["DMM"] = np.nan
+        tlc.metrics["N_gap_0.5"] = 0
+        tlc.metrics["N_gap_1.0"] = 0
+        tlc.metrics["N_gap_1.5"] = 0
+        tlc.metrics["N_gap_2.0"] = 0
+        return
     # Search range for chases metric is between 1.0 durations and 0.1 times the period away
     chases_tran = (abs(tlc.phase) > tlc.qtran) & (abs(tlc.phase) < 0.1)
     # Count all transits in/near data gaps
@@ -108,12 +120,22 @@ def transit_events(tlc, frac=0.7, gap=0.3):
             tlc.redchi2[i] = np.nan
     O = tlc.SES
     E = tlc.dep / errs
-    chi2 = np.sum((O - E) ** 2 / E)
-    tlc.metrics["CHI"] = tlc.metrics["MES"] / np.sqrt(chi2 / (tlc.N_transit - 1))
+    valid = np.isfinite(O) & np.isfinite(E) & (E != 0)
+    if np.sum(valid) > 1:
+        chi2 = np.sum((O[valid] - E[valid]) ** 2 / np.abs(E[valid]))
+        dof = np.sum(valid) - 1
+        tlc.metrics["CHI"] = (
+            tlc.metrics["MES"] / np.sqrt(chi2 / dof) if (chi2 > 0 and dof > 0) else np.nan
+        )
+    else:
+        tlc.metrics["CHI"] = np.nan
     tlc.metrics["med_chases"] = np.nanmedian(tlc.chases)
     tlc.metrics["mean_chases"] = np.nanmean(tlc.chases)
-    tlc.metrics["max_SES"] = np.nanmax(tlc.SES)
-    tlc.metrics["DMM"] = np.nanmean(deps) / np.nanmedian(deps)
+    tlc.metrics["max_SES"] = np.nanmax(tlc.SES) if tlc.SES.size else np.nan
+    median_dep = np.nanmedian(deps)
+    tlc.metrics["DMM"] = (
+        np.nanmean(deps) / median_dep if np.isfinite(median_dep) and median_dep != 0 else np.nan
+    )
 
 
 def recompute_MES(tlc, chases=0.01, rubble=0.75, redchi2=5):
