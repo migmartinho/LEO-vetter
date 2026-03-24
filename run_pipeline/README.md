@@ -19,7 +19,7 @@ Required columns:
 5. `tce_period` (float): period in days
 6. `tce_duration` (float): duration in hours
 7. `tce_plnt_num` (int): candidate number for the target
-8. `sectors_observed` (str): either:
+8. `sectors_observed` (str): sectors in which the target was observed for this run. Either:
 	 - explicit sectors joined by `_` (example: `1_4_27`), or
 	 - binary-like mask string (auto-converted by the pipeline)
 
@@ -54,7 +54,7 @@ target_id,uid,sector_run,tce_time0bk,tce_period,tce_duration,tce_plnt_num,sector
 
 ## Environment And Installation
 
-Run these from the repository root (the folder that contains [setup.py](setup.py)).
+Run these from the repository root (the folder that contains [setup.py](/setup.py)).
 
 Important:
 
@@ -95,17 +95,17 @@ python -c "import leo_vetter; print('leo_vetter import ok')"
 
 ## Run With Shell Script
 
-Template script: [run_pipeline/run_pipeline.sh](run_pipeline/run_pipeline.sh)
+Template script: [run_pipeline/run_pipeline.sh](/run_pipeline/run_pipeline.sh)
 
 Typical steps:
 
-1. Edit path variables in [run_pipeline/run_pipeline.sh](run_pipeline/run_pipeline.sh):
+1. Edit path variables in [run_pipeline/run_pipeline.sh](/run_pipeline/run_pipeline.sh):
 	 - `RUN_PIPELINE_PY`
 	 - `RUN_DIR`
 	 - `LC_DIR`
 	 - `RUN_CONFIG`
 	 - `TCE_TABLE`
-2. Ensure argument name is `--num_processes` (plural) when running [run_pipeline/run_pipeline.py](run_pipeline/run_pipeline.py).
+2. Ensure argument name is `--num_processes` (plural) when running [run_pipeline/run_pipeline.py](/run_pipeline/run_pipeline.py).
 3. Run:
 
 ```bash
@@ -114,7 +114,7 @@ bash run_pipeline/run_pipeline.sh
 
 ## Run With Python Script
 
-Main runner: [run_pipeline/run_pipeline.py](run_pipeline/run_pipeline.py)
+Main runner: [run_pipeline/run_pipeline.py](/run_pipeline/run_pipeline.py)
 
 Example:
 
@@ -138,14 +138,14 @@ Common flags:
 4. `--plot_summary_flag`
 5. `--aggregate_checkpoint_tces N` (periodically aggregates and removes per-target CSVs)
 
-Configuration YAML example is in [run_pipeline/run_config.yaml](run_pipeline/run_config.yaml) and must define:
+Configuration YAML example is in [run_pipeline/run_config.yaml](/run_pipeline/run_config.yaml) and must define:
 
 1. `decision_thresholds`
 2. `additional_metadata`
 
 ## Expected Outputs
 
-All outputs are written under `--run_dir`. See output of example run in [run_pipeline/example](run_pipeline/example/).
+All outputs are written under `--run_dir`. See output of example run in [run_pipeline/example](/run_pipeline/example/).
 
 Always created:
 
@@ -165,7 +165,7 @@ Aggregated outputs:
 1. `agg_metrics.csv`
 2. `agg_fa_fp_tests.csv`
 
-These are produced by periodic checkpoint aggregation (`--aggregate_checkpoint_tces > 0`) and/or by running [run_pipeline/run_aggregate_results.py](run_pipeline/run_aggregate_results.py).
+These are produced by periodic checkpoint aggregation (`--aggregate_checkpoint_tces > 0`) and/or by running [run_pipeline/run_aggregate_results.py](/run_pipeline/run_aggregate_results.py).
 
 ## Aggregate Results Separately
 
@@ -183,20 +183,17 @@ python run_pipeline/run_aggregate_results.py \
 1. Problem: `ModuleNotFoundError: No module named 'leo_vetter'`
 	Fix: activate the environment and run `pip install -e .` from the repository root.
 
-2. Problem: Run script fails with unrecognized argument `--num_process`
-	Fix: use `--num_processes` (plural) with [run_pipeline/run_pipeline.py](run_pipeline/run_pipeline.py).
-
-3. Problem: No light curves found / download failures from MAST
+2. Problem: No light curves found / download failures from MAST
 	Fix: verify `--lc_dir`, `--lc_source`, sector list format in `sectors_observed`, and network access. The pipeline retries transient remote errors, but persistent failures still need path/source/network fixes.
 
-4. Problem: Aggregates missing (`agg_metrics.csv`, `agg_fa_fp_tests.csv`)
-	Fix: either run with `--aggregate_checkpoint_tces > 0` or run [run_pipeline/run_aggregate_results.py](run_pipeline/run_aggregate_results.py) after the batch.
+3. Problem: Aggregates missing (`agg_metrics.csv`, `agg_fa_fp_tests.csv`)
+	Fix: either run with `--aggregate_checkpoint_tces > 0` or run [run_pipeline/run_aggregate_results.py](/run_pipeline/run_aggregate_results.py) after the pipeline run.
 
-5. Problem: Run appears to skip many TCEs unexpectedly
-	Fix: check for existing aggregate files in your run directory. The pipeline skips previously processed UIDs found in both aggregate files.
+4. Problem: Run appears to skip many TCEs unexpectedly
+	Fix: check for existing aggregate files in your run directory. The pipeline skips previously processed TCEs found in both aggregate files.
 
-6. Problem: Plots are not generated
-	Fix: pass `--plot_modshift_flag` and/or `--plot_summary_flag`. Without flags, plot folders may exist but remain empty.
+5. Problem: Plots are not generated
+	Fix: pass `--plot_modshift_flag` and/or `--plot_summary_flag`.
 
-7. Problem: MAST is down (you see no light curve files being downloaded and run seems to hang/timeout per TIC is reached)
+6. Problem: MAST is down (you see no light curve files being downloaded and run seems to hang/timeout per TIC is reached)
 	Fix: wait until it comes back up or use local target light curve FITS files and add yourself stellar parameters to the TCE input table.

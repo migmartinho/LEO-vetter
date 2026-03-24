@@ -15,3 +15,5 @@ __pycache__/
 runs/
 data/
 run_pipeline/local/
+run_pipeline/example/test_run/
+run_pipeline/example/lc_files/
