@@ -9,6 +9,13 @@ Requires a CSV file containing TCEs with the following columns:
 - tce_duration (TCE duration in hours), float
 - tce_plnt_num (TCE planet candidate number, e.g. 1 for the first planet candidate, 2 for the second, etc.), int
 - sectors_observed (string indicating which sectors the TIC was observed in for the specific sector run, either as a binary string like "100100" where each digit represents a sector, or as an explicit list of sector numbers like "1_4_27"), string
+
+Optional columns for stellar parameters:
+- tce_srad_dv (tce_srad_err_dv): stellar radius (uncertainty) in R_s
+- tce_smass_dv (tce_smass_err_dv): stellar mass (uncertainty) in M_s
+- tce_sdens_dv (tce_sdens_err_dv): stellar density (uncertainty) in 
+- tce_steff_dv (tce_steff_err_dv): stellar effective temperature (uncertainty) in K
+- tce_slogg_dv (tce_slogg_err_dv): stellar surface gravity (uncertainty) in log
 """
 
 # Suppress expected RuntimeWarnings from edge cases (divide by zero, empty arrays, etc)
@@ -27,9 +34,10 @@ from multiprocessing import Pool
 from tqdm import tqdm
 import logging
 import time
-
+import yaml
 from requests.exceptions import RequestException
 from urllib3.exceptions import HTTPError
+import csv
 
 from leo_vetter.stellar import quadratic_ldc
 from leo_vetter.main import TCELightCurve
@@ -39,9 +47,30 @@ from leo_vetter.thresholds import check_thresholds
 
 TIC_COLUMNS = ["rad", "mass", "rho", "Teff", "logg"]
 TCE_COLUMNS = ["target_id", "uid", "sector_run", "tce_time0bk", "tce_period", "tce_duration", "tce_plnt_num", "sector_run", "sectors_observed"]
+# TCE_STELLAR_COLUMNS = ["tce_smass_dv", "tce_smass_err_dv", "tce_srad_dv", "tce_srad_err_dv", "tce_sdens_dv", "tce_sdens_err_dv", "tce_steff_dv", "tce_steff_err_dv", "tce_slogg_dv", "tce_slogg_err_dv"]
+TCE_STELLAR_COLUMNS = ["tic_smass", "tic_smass_err", "tic_sradius", "tic_sradius_err", "tic_sdens", "tic_sdens_err", "tic_steff", "tic_steff_err", "tic_slogg", "tic_slogg_err"]
 LC_SOURCE_OPTIONS = ("2min", "ffi")
 REMOTE_RETRY_ATTEMPTS = 4
 REMOTE_RETRY_BASE_DELAY_SECONDS = 2.0
+STELLAR_DEFAULTS = {
+    "rad": 1.0,
+    "mass": 1.0,
+    "rho": 1.0,
+    "Teff": 5777.0,
+    "logg": 4.44,
+}
+MAP_STELLAR_TCE_TABLE_NAMES = {
+    "tic_smass": 'mass',
+    "tic_smass_err": 'e_mass',
+    "tic_sradius": 'rad',
+    "tic_sradius_err": 'e_rad',
+    "tic_sdens": 'rho',
+    "tic_sdens_err": 'e_rho',
+    "tic_steff": 'Teff',
+    "tic_steff_err": 'e_Teff',
+    "tic_slogg": 'logg',
+    "tic_slogg_err": 'e_logg',
+}
 
 
 def get_logger():
@@ -277,12 +306,17 @@ def get_lc_data_for_tce(lc, epo, per, dur):
     
     return time, raw, flux, flux_err
 
-def query_tic_for_stellar_parameters(tic):
+def get_stellar_parameters_for_tic(tic, tic_data=None, query_tic=False):
     """Queries the TIC catalog for stellar parameters for a given TIC ID and returns them in a dictionary, along with limb-darkening coefficients.
     
     :param int tic: TIC ID
+    :param pd.DataFrame tic_data: DataFrame containing TCE data for the TIC, indexed by TCE UID
+    :param bool query_tic: if True, TIC is queried to get stellar paramters. Otherwise, they are grabbed from the TIC TCE data
     :return dict: dictionary containing stellar parameters and limb-darkening coefficients for the target TIC
     """
+    
+    if tic_data is None and not query_tic:
+        raise ValueError(f'No stellar parameters were provided for TIC {tic} and querying TIC catalog was disabled.')
 
     def _to_finite_float(value, fallback):
         try:
@@ -291,23 +325,20 @@ def query_tic_for_stellar_parameters(tic):
             return fallback
         return cast_value if np.isfinite(cast_value) else fallback
 
-    result = retry_remote_call(
-        lambda: Catalogs.query_criteria(catalog="TIC", ID=tic),
-        f"TIC catalog query for TIC {tic}",
-    )
+    if query_tic:
+        result = retry_remote_call(
+            lambda: Catalogs.query_criteria(catalog="TIC", ID=tic),
+            f"TIC catalog query for TIC {tic}",
+        )
+    else:            
+        result = {tic_col: tic_data[tic_col].iloc[0] for tic_col in TIC_COLUMNS}
+        result.update({f'e_{tic_col}': tic_data[f'e_{tic_col}'].iloc[0] for tic_col in TIC_COLUMNS})
+        
     star = {"tic": tic}
 
     # Use solar-like defaults when TIC metadata are missing/non-finite.
-    stellar_defaults = {
-        "rad": 1.0,
-        "mass": 1.0,
-        "rho": 1.0,
-        "Teff": 5777.0,
-        "logg": 4.44,
-    }
-
     for key in TIC_COLUMNS:
-        star[key] = _to_finite_float(result[key], stellar_defaults[key])
+        star[key] = _to_finite_float(result[key], STELLAR_DEFAULTS[key])
         star["e_" + key] = _to_finite_float(result["e_" + key], 0.0)
 
     # Get limb-darkening parameters from sanitized Teff/logg values.
@@ -315,7 +346,7 @@ def query_tic_for_stellar_parameters(tic):
 
     return star
 
-def generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, metrics_save_fp, planetno=1):
+def generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, planetno=1):
     """Generates metrics for the TCE.
 
     :param int tic_id: TIC ID
@@ -324,7 +355,7 @@ def generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, metrics_save
     :param float dur: transit duration (day)
     :param lk.Lightcurve lc_tic: target light curve object
     :param dict tic_params: target stellar parameters
-    :param Path metrics_save_fp: filepath used to save metrics CSV file
+    # :param Path metrics_save_fp: filepath used to save metrics CSV file
     :param int planetno: SPOC planet number, defaults to 1
     :return TCELightCurve: TCE object
     """
@@ -335,7 +366,7 @@ def generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, metrics_save
         
     tlc.compute_flux_metrics(tic_params, verbose=True)
     
-    tlc.save_metrics(save_file=metrics_save_fp)
+    # tlc.save_metrics(save_file=metrics_save_fp)
     
     return tlc
 
@@ -357,17 +388,18 @@ def check_thresholds_tce(tlc, decision_thresholds, tce_uid, verbose=False):
     failed_tests = '_'.join(FA_failed_tests + FP_failed_tests) if (FA_failed_tests or FP_failed_tests) else 'None'
     
     fa_fp_tests_df = pd.DataFrame({
+        'uid': [tce_uid],
         'FA': [FA],
         'FP': [FP],
         'Failed Tests': [failed_tests],
-    }, index=[tce_uid])
+    })
 
     if not FA and not FP and verbose:
-        print(f"TIC-{tlc.tic}.{tlc.planetno} is a planet candidate!")   
+        print(f"TCE {tce_uid} is a planet candidate!")   
 
     return fa_fp_tests_df
 
-def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, plot_modshift_save_dir=None, plot_summary_save_dir=None, metrics_save_dir=None, fa_fp_tests_save_dir=None):
+def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, plot_modshift_save_dir=None, plot_summary_save_dir=None, metrics_save_dir=None, fa_fp_tests_save_dir=None, query_tic=False):
     """Processes a single TIC through the pipeline, including light curve retrieval, metric generation, FA/FP classification, and plotting.
     
     :param int tic_id: TIC ID
@@ -382,13 +414,14 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
     :param Path plot_summary_save_dir: directory to save summary plots
     :param Path metrics_save_dir: directory to save metrics CSV files
     :param Path fa_fp_tests_save_dir: directory to save FA/FP tests CSV files
+    :param bool query_tic: if True, TIC catalog is queried for stellar parameters for each target
     :return dict: dictionary containing processing results for the TIC
     """
     
     logger = get_logger()
 
     try:
-        tic_params = query_tic_for_stellar_parameters(tic_id)
+        tic_params = get_stellar_parameters_for_tic(tic_id, tic_data, query_tic)
     except Exception as error:
         logger.exception("Failed to fetch stellar parameters for TIC %s", tic_id)
         return {
@@ -403,6 +436,7 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
     lc_files_to_cleanup = set()
     processed_tces = 0
     failed_sector_runs = []
+    tlc_tcelst = []
     for sector_run, tic_data_sector_run in tqdm(tic_data.groupby('sector_run'), desc=f'Processing TIC {tic_id}', unit='sector run', total=tic_data["sector_run"].nunique()):
 
         sectors_observed = tic_data_sector_run["sectors_observed"].iloc[0]
@@ -433,21 +467,35 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
             dur = tce_data["tce_duration"]
             planetno = tce_data["tce_plnt_num"]
 
-            tlc = generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, metrics_save_dir / f"metrics_tic{tic_id}_tce{tce_uid}.csv", planetno=planetno)
+            tlc_tce = generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, planetno=planetno)
+            tlc_tce.metrics['uid'] = tce_uid
+            # print(tlc_tce.metrics)
+            # aa
+            tlc_tcelst.append(tlc_tce)
 
-            fa_fp_tests_df_tce = check_thresholds_tce(tlc, decision_thresholds, tce_uid, verbose=True)
+            fa_fp_tests_df_tce = check_thresholds_tce(tlc_tce, decision_thresholds, tce_uid, verbose=True)
             fa_fp_tests_df_tic_lst.append(fa_fp_tests_df_tce)
             processed_tces += 1
 
             if plot_modshift_flag:
-                plot_modshift(tlc, save_fig=plot_modshift_flag, save_file=plot_modshift_save_dir / f"modshift_tic{tic_id}_tce{tce_uid}.png")
+                plot_modshift(tlc_tce, save_fig=plot_modshift_flag, save_file=plot_modshift_save_dir / f"modshift_tic{tic_id}_tce{tce_uid}.png")
             if plot_summary_flag:
-                plot_summary(tlc, tic_params, save_fig=plot_summary_flag, save_file=plot_summary_save_dir / f"summary_tic{tic_id}_tce{tce_uid}.png")
+                plot_summary(tlc_tce, tic_params, save_fig=plot_summary_flag, save_file=plot_summary_save_dir / f"summary_tic{tic_id}_tce{tce_uid}.png")
 
+    # save FA/FP threshold tests for target's TCEs
     fa_fp_tests_df_tic_lst = [df for df in fa_fp_tests_df_tic_lst if df is not None]
     if fa_fp_tests_df_tic_lst:
         fa_fp_tests_df_tic_df = pd.concat(fa_fp_tests_df_tic_lst, axis=0)
-        fa_fp_tests_df_tic_df.to_csv(fa_fp_tests_save_dir / f"fa_fp_tests_tic{tic_id}.csv", index=True)
+        fa_fp_tests_df_tic_df.to_csv(fa_fp_tests_save_dir / f"fa_fp_tests_tic{tic_id}.csv", index=False)
+    
+    # save metrics for target's TCEs
+    metrics_tic_df = metrics_save_dir / f"metrics_tic{tic_id}.csv"
+    with open(metrics_tic_df, "w") as f:
+            writer = csv.writer(f, delimiter=",")
+            for tce_i, tlc_tce in enumerate(tlc_tcelst):
+                if tce_i == 0:
+                    writer.writerow(tlc_tce.metrics.keys())
+            writer.writerow(tlc_tce.metrics.values())
 
     if delete_lc_after_target:
         for lc_file in sorted(lc_files_to_cleanup):
@@ -468,15 +516,20 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
     }
 
 
-def read_tce_table(tce_tbl_fp):
+def read_tce_table(tce_tbl_fp, get_stellar_parameters_tic_from_table=False):
     """Reads TCE table and prepares it for the run.
 
-    :param Path tce_tbl_fp: filepath to TCE table
+    :param str tce_tbl_fp: filepath to TCE table
+    :param bool get_stellar_parameters_tic_from_table: if False, stellar parameters are fetched from the TCE table
     :return pd.DataFrame: loaded TCE table
     """
     
-    tce_tbl = pd.read_csv(tce_tbl_fp, usecols=TCE_COLUMNS, on_bad_lines='skip', engine='python', dtype={'sectors_observed': str})
-    
+    if get_stellar_parameters_tic_from_table:
+        tce_tbl = pd.read_csv(tce_tbl_fp, usecols=TCE_COLUMNS + TCE_STELLAR_COLUMNS, on_bad_lines='skip', engine='python', dtype={'sectors_observed': str})
+        tce_tbl = tce_tbl.rename(columns=MAP_STELLAR_TCE_TABLE_NAMES)
+    else:
+        tce_tbl = pd.read_csv(tce_tbl_fp, usecols=TCE_COLUMNS, on_bad_lines='skip', engine='python', dtype={'sectors_observed': str})
+
     tce_tbl = tce_tbl.rename(columns={"target_id": "tic"})
     tce_tbl['tce_duration'] = tce_tbl['tce_duration'] / 24. # convert duration from hours to days
     
@@ -484,7 +537,7 @@ def read_tce_table(tce_tbl_fp):
     
     return tce_tbl
 
-def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_source="2min", delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, num_processes=4, additional_metadata=None):
+def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_source="2min", delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, num_processes=4, additional_metadata=None, query_tic=False, aggregate_checkpoint_tces=0):
     """Runs the LEO-vetter pipeline for a batch of TCEs specified in a TCE table CSV file.
     
     :param Path tce_tbl_fp: filepath to TCE table CSV file
@@ -497,7 +550,12 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
     :param bool plot_summary_flag: whether to generate and save summary plots, defaults to False
     :param int num_processes: number of parallel processes to use for processing TICs, defaults to 4
     :param dict additional_metadata: optional dictionary of additional metadata to include in the saved decision thresholds CSV file
+    :param bool query_tic: if True, TIC catalog is queried for stellar parameters for each target
+    :param int aggregate_checkpoint_tces: if >0, aggregate results and delete individual CSV files whenever this many new TCEs are processed
     """
+    
+    res_dir = Path(res_dir)
+    save_lc_dir = Path(save_lc_dir)
     
     res_dir.mkdir(exist_ok=True)
     logger = setup_logging(res_dir / "logs")
@@ -509,8 +567,10 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
     
     metrics_save_dir.mkdir(exist_ok=True)
     fa_fp_tests_save_dir.mkdir(exist_ok=True)
-    plot_modshift_save_dir.mkdir(exist_ok=True)
-    plot_summary_save_dir.mkdir(exist_ok=True)
+    if plot_modshift_flag:
+        plot_modshift_save_dir.mkdir(exist_ok=True)
+    if plot_summary_flag:
+        plot_summary_save_dir.mkdir(exist_ok=True)
     
     save_lc_dir.mkdir(exist_ok=True, parents=True)
     
@@ -529,7 +589,11 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
             f.write(f"{key}: {value}\n")
         decision_thresholds_df.to_csv(f, index=True)
     
-    tce_tbl = read_tce_table(tce_tbl_fp)
+    if query_tic:
+        get_stellar_params_from_tce_table = False
+    else:
+        get_stellar_params_from_tce_table = True
+    tce_tbl = read_tce_table(tce_tbl_fp, get_stellar_parameters_tic_from_table=get_stellar_params_from_tce_table)
     
     # Check for previously processed TCEs in aggregate results and skip them to avoid redundant processing
     agg_metrics_fp = res_dir / "agg_metrics.csv"
@@ -558,19 +622,36 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
         f"lc_source={lc_source}, delete_lc_after_target={delete_lc_after_target}"
     )
     
+    completed_tces = 0
+    last_checkpoint_tces = 0
     with Pool(processes=num_processes) as pool, tqdm(total=len(tic_jobs), desc='Processing TICs', unit='TIC') as pbar:
         
         async_results = []
         for tic_job in tic_jobs:
             async_result = pool.apply_async(
                 process_tic, 
-                args=(*tic_job, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target, plot_modshift_flag, plot_summary_flag, plot_modshift_save_dir, plot_summary_save_dir, metrics_save_dir, fa_fp_tests_save_dir),
+                args=(*tic_job, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target, plot_modshift_flag, plot_summary_flag, plot_modshift_save_dir, plot_summary_save_dir, metrics_save_dir, fa_fp_tests_save_dir, query_tic),
                 callback=lambda _: pbar.update(),
             )
             async_results.append(async_result)
         
         for async_result in async_results:
-            pipeline_results.append(async_result.get())
+            result = async_result.get()
+            pipeline_results.append(result)
+            completed_tces += int(result.get("processed_tces", 0) or 0)
+
+            if aggregate_checkpoint_tces > 0:
+                if (completed_tces - last_checkpoint_tces) >= aggregate_checkpoint_tces:
+                    logger.info(
+                        "Reached checkpoint at %s processed TCEs. Aggregating and cleaning up individual CSV files.",
+                        completed_tces,
+                    )
+                    aggregate_and_cleanup_results(res_dir, logger=logger)
+                    last_checkpoint_tces = completed_tces
+
+    if aggregate_checkpoint_tces > 0:
+        logger.info("Final aggregate/cleanup pass after pipeline completion")
+        aggregate_and_cleanup_results(res_dir, logger=logger)
 
     pipeline_results_df = pd.DataFrame(pipeline_results)
     if not pipeline_results_df.empty:
@@ -594,20 +675,32 @@ def aggregate_metrics(metrics_dir, output_fp):
     
     :param Path metrics_dir: directory containing individual TCE metrics CSV files
     :param Path output_fp: filepath to save the aggregated metrics CSV file
+    :return int: number of target metrics CSV files found for the run.
     """
     
+    metrics_files = sorted(metrics_dir.glob("metrics_tic*.csv"))
+    if not metrics_files:
+        return 0
+    
     all_metrics = []
-    for metrics_file in metrics_dir.glob("metrics_tic*_tce*.csv"):
+    for metrics_file in metrics_files:
         df = pd.read_csv(metrics_file)
-        df['uid'] = metrics_file.stem.split("tce")[1] # extract the TCE uid from the filename and add it as a column to the metrics dataframe
         all_metrics.append(df)
     
     all_metrics_df = pd.concat(all_metrics, ignore_index=True)
+    
+    output_fp = Path(output_fp)
+    if output_fp.exists():
+        prev_df = pd.read_csv(output_fp)
+        all_metrics_df = pd.concat([prev_df, all_metrics_df], ignore_index=True)
+    all_metrics_df.drop_duplicates(subset=["uid"], keep="last", inplace=True)
+    
     all_metrics_df.sort_values(["tic", "uid"], inplace=True)
     all_metrics_df.set_index("uid", inplace=True)
     all_metrics_df.to_csv(output_fp, index=True)
     
     print(f"Aggregated metrics for {len(all_metrics_df)} TCEs saved to {output_fp}")
+    return len(metrics_files)
     
 
 def aggregate_fa_fp_tests(fa_fp_tests_dir, output_fp):
@@ -615,79 +708,169 @@ def aggregate_fa_fp_tests(fa_fp_tests_dir, output_fp):
     
     :param Path fa_fp_tests_dir: directory containing individual TCE FA/FP tests CSV files
     :param Path output_fp: filepath to save the aggregated FA/FP tests CSV file
+    :return int: number of target FA/FP test CSV files found for the run.
     """
     
+    fa_fp_files = sorted(fa_fp_tests_dir.glob("fa_fp_tests_tic*.csv"))
+    if not fa_fp_files:
+        return 0
+    
     all_fa_fp_tests = []
-    for fa_fp_tests_file in fa_fp_tests_dir.glob("fa_fp_tests_tic*.csv"):
-        df = pd.read_csv(fa_fp_tests_file, index_col=0)
-        df['uid'] = df.index # add the uid as a column to the fa_fp_tests dataframe
+    for fa_fp_tests_file in fa_fp_files:
+        df = pd.read_csv(fa_fp_tests_file)
         all_fa_fp_tests.append(df)
     
     all_fa_fp_tests_df = pd.concat(all_fa_fp_tests, ignore_index=True)
+    
+    output_fp = Path(output_fp)
+    if output_fp.exists():
+        prev_df = pd.read_csv(output_fp)
+        all_fa_fp_tests_df = pd.concat([prev_df, all_fa_fp_tests_df], ignore_index=True)
+    all_fa_fp_tests_df.drop_duplicates(subset=["uid"], keep="last", inplace=True)
+    
     all_fa_fp_tests_df.sort_values(["uid"], inplace=True)
     all_fa_fp_tests_df.set_index("uid", inplace=True)
     all_fa_fp_tests_df.to_csv(output_fp, index=True)
     
     print(f"Aggregated FA/FP tests for {len(all_fa_fp_tests_df)} TCEs saved to {output_fp}")
+    return len(fa_fp_files)
     
+    
+def aggregate_and_cleanup_results(res_dir, logger=None):
+    """Aggregate per-target CSV outputs and remove individual files after successful writes.
+    
+    :param str res_dir: path to results directory
+    :param Logger logger: logger object
+    """
+
+    res_dir = Path(res_dir)
+    metrics_dir = res_dir / "metrics"
+    fa_fp_tests_dir = res_dir / "fa_fp_tests"
+    agg_metrics_fp = res_dir / "agg_metrics.csv"
+    agg_fa_fp_tests_fp = res_dir / "agg_fa_fp_tests.csv"
+
+    aggregated_metrics_count = 0
+    aggregated_fa_fp_count = 0
+
+    try:
+        aggregated_metrics_count = aggregate_metrics(metrics_dir, agg_metrics_fp)
+    except Exception as error:
+        if logger:
+            logger.exception("Failed to aggregate metrics: %s", error)
+        else:
+            print(f"Failed to aggregate metrics: {error}")
+
+    try:
+        aggregated_fa_fp_count = aggregate_fa_fp_tests(fa_fp_tests_dir, agg_fa_fp_tests_fp)
+    except Exception as error:
+        if logger:
+            logger.exception("Failed to aggregate FA/FP tests: %s", error)
+        else:
+            print(f"Failed to aggregate FA/FP tests: {error}")
+
+    if aggregated_metrics_count > 0:
+        for metrics_file in metrics_dir.glob("metrics_tic*.csv"):
+            try:
+                metrics_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    if aggregated_fa_fp_count > 0:
+        for fa_fp_file in fa_fp_tests_dir.glob("fa_fp_tests_tic*.csv"):
+            try:
+                fa_fp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    if logger:
+        logger.info(
+            "Aggregate/cleanup summary: metrics_files=%s, fa_fp_files=%s",
+            aggregated_metrics_count,
+            aggregated_fa_fp_count,
+        )
+        
            
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Run LEO-vetter on TESS TCE tables.")
     parser.add_argument(
-        "--lc-source",
+        "--run_dir",
+        type=str,
+        help="Path to run directory.",
+    )
+    parser.add_argument(
+        "--lc_dir",
+        type=str,
+        required=True,
+        help="Path to root directory to target light curve files.",
+    )
+    parser.add_argument(
+        "--run_config",
+        type=str,
+        required=True,
+        help="Configuration YAML file for the run.",
+    )
+    parser.add_argument(
+        "--lc_source",
+        type=str,
         choices=LC_SOURCE_OPTIONS,
         default="2min",
         help="Choose which SPOC light-curve source to use for cache matching and downloads.",
     )
     parser.add_argument(
-        "--tce-table",
-        type=Path,
-        default=Path('/data/exoplnt_dl/ephemeris_tables/tess/tess_spoc_2min/tess-spoc-2min-tces-dv_s1-s94_s1s92_9-19-2025_1518_exofop-sg1-tois_9-22-2025.csv'),
+        "--tce_table",
+        required=True,
+        type=str,
         help="Path to the TCE table CSV.",
     )
+    
     parser.add_argument(
-        "--delete-lc-after-target",
+        "--num_processes",
+        type=int,
+        default=1,
+        help="Number of processes used for parallelizing the run.",
+    )
+    
+    parser.add_argument(
+        "--query_tic_catalog",
+        action="store_true",
+        help="Query TIC catalog for stellar parameters for each target.",
+    )
+    
+    parser.add_argument(
+        "--delete_lc_after_target",
         action="store_true",
         help="Delete cached light-curve FITS files after all TCEs for the target TIC are processed.",
     )
+    
+    parser.add_argument(
+        "--aggregate_checkpoint_tces",
+        type=int,
+        default=0,
+        help="If >0, periodically aggregate and delete individual CSV outputs every N processed TCEs.",
+    )
+    
+    parser.add_argument(
+        "--plot_modshift_flag",
+        action="store_true",
+        help="Plot modshift plot for each TCE.",
+    )
+    
+    parser.add_argument(
+        "--plot_summary_flag",
+        action="store_true",
+        help="Plot summary plot for each TCE.",
+    )
+    
     args = parser.parse_args()
     
-    additional_metadata = {
-        'TCEs catalog': 'TESS SPOC 2-min TCEs S1-S94 (up to S14-S78 multisector run)'
-    }
-
-    tce_tbl_fp = args.tce_table
-    num_processes = 6
-    decision_thresholds = {
-        "MES": 6.2,
-        "N_transit": 3,
-        "SHP": 0.6,
-        "MS1": 0.2,
-        "MS2": 0.8,
-        "MS3": 0.8,
-        "chases": 0.78,
-        "DMM": 1.5,
-        "max_SES_to_MES": 0.8,
-        "AIC1": -60,
-        "AIC2": -30,
-        "SWEET": 15,
-        "ASYM": 8,
-        "CHI": 7.8,
-        "frac_gap": 0.5,
-        "V_shape": 1.5,
-        "size": 22,
-        "MS4": 0,
-        "MS5": -1,
-        "MS6": -1,
-        "offset": 15,
-    }
+    with open(args.run_config, 'r') as file:
+        run_config = yaml.load(file, Loader=yaml.SafeLoader)
+        
+        decision_thresholds = run_config['decision_thresholds']
+        additional_metadata = run_config['additional_metadata']
     
-    plot_modshift_flag = False  # if True, modshift plots will be generated and saved for each TCE. If False, modshift plots will not be generated.
-    plot_summary_flag = False  # if True, summary plots will be generated and saved for each TCE. If False, summary plots will not be generated.
-    res_dir = Path('/data/LEO-vetter/results/')
-    lc_data_dir = Path('/data/LEO-vetter/data/lcs')
-    
-    run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir=lc_data_dir, res_dir=res_dir, lc_source=args.lc_source, delete_lc_after_target=args.delete_lc_after_target,
-                 plot_modshift_flag=plot_modshift_flag, plot_summary_flag=plot_summary_flag, num_processes=num_processes, additional_metadata=additional_metadata)
+    run_pipeline(args.tce_table, decision_thresholds, save_lc_dir=args.lc_dir, res_dir=args.run_dir, lc_source=args.lc_source, delete_lc_after_target=args.delete_lc_after_target,
+                 plot_modshift_flag=args.plot_modshift_flag, plot_summary_flag=args.plot_summary_flag, num_processes=args.num_processes, additional_metadata=additional_metadata, 
+                 query_tic=args.query_tic_catalog, aggregate_checkpoint_tces=args.aggregate_checkpoint_tces)
     

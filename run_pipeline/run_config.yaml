@@ -1,0 +1,25 @@
+
+additional_metadata:
+  'TCEs catalog': 'TESS SPOC 2-min TCEs S1-S94 (up to S14-S78 multisector run)'
+decision_thresholds:
+  "MES": 6.2
+  "N_transit": 3
+  "SHP": 0.6
+  "MS1": 0.2
+  "MS2": 0.8
+  "MS3": 0.8
+  "chases": 0.78
+  "DMM": 1.5
+  "max_SES_to_MES": 0.8
+  "AIC1": -60
+  "AIC2": -30
+  "SWEET": 15
+  "ASYM": 8
+  "CHI": 7.8
+  "frac_gap": 0.5
+  "V_shape": 1.5
+  "size": 22
+  "MS4": 0
+  "MS5": -1
+  "MS6": -1
+  "offset": 15
