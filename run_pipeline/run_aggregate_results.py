@@ -4,7 +4,7 @@ import argparse
 import glob
 from pathlib import Path
 
-from run_pipeline.run_batches_tces import aggregate_metrics, aggregate_fa_fp_tests
+from run_pipeline.run_pipeline import aggregate_metrics, aggregate_fa_fp_tests
 
 def main():
     
