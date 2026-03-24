@@ -153,7 +153,7 @@ Always created:
 
 1. `decision_thresholds.csv`: thresholds + metadata snapshot used for the run
 2. `pipeline_status.csv`: per-TIC run status summary
-3. `logs/pipeline.log`: detailed logs
+3. `logs/pipeline.log`: detailed logs from the pipeline logger (stdout/err output can also be seen from `run_output.txt`)
 4. `metrics/metrics_tic*.csv`: per-target metrics files
 5. `fa_fp_tests/fa_fp_tests_tic*.csv`: per-target FA/FP outcomes
 
