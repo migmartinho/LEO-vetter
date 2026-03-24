@@ -1,9 +1,11 @@
-# LEO Batch Pipeline
+# LEO-Vetter Batch Pipeline
 
 This folder contains scripts to run LEO-Vetter over a batch (table) of TCEs, classify each TCE, and write per-target and aggregated outputs (metrics and FA/FP threshold-based tests).
 
 Current implementation:
 - Flux-level vetting
+	- When metric cannot be computed, metric value is returned as NaN
+	- When test cannot be evaluated, the TCE does not fail the test
 - **Pixel-level vetting has not been included in the pipeline** (but can be easily added; requirements: install [transit-diffImage](https://github.com/stevepur/transit-diffImage) which requires target pixel files; see [main README.md](/README.md#installation))
 
 ## Input Format
@@ -21,15 +23,15 @@ Required columns:
 7. `tce_plnt_num` (int): candidate number for the target
 8. `sectors_observed` (str): sectors in which the target was observed for this run. Either:
 	 - explicit sectors joined by `_` (example: `1_4_27`), or
-	 - binary-like mask string (auto-converted by the pipeline)
+	 - binary-like mask string (auto-converted by the pipeline to explicit sectors joined by `_`) (example: `0100001` converts to `1_6`)
 
 Optional stellar columns (used when not querying TIC for the stellar parameters):
 
-1. `tic_smass`, `tic_smass_err`: stellar mass in (M_S)
-2. `tic_sradius`, `tic_sradius_err`: stellar radius in (R_S)
-3. `tic_sdens`, `tic_sdens_err`: stellar density (rho_S)
-4. `tic_steff`, `tic_steff_err`: stellar effective temperature (K)
-5. `tic_slogg`, `tic_slogg_err`: stellar surface gravity (log10(cm/s^2))
+1. `tic_smass`, `tic_smass_err`: stellar mass ($M_{\odot}$)
+2. `tic_sradius`, `tic_sradius_err`: stellar radius ($R_{\odot}$)
+3. `tic_sdens`, `tic_sdens_err`: stellar density ($\rho_{\odot}$)
+4. `tic_steff`, `tic_steff_err`: stellar effective temperature ($K$)
+5. `tic_slogg`, `tic_slogg_err`: stellar surface gravity ($log_{10}(cm/s^2)$)
 
 Notes:
 
@@ -58,24 +60,24 @@ Run these from the repository root (the folder that contains [setup.py](/setup.p
 
 Important:
 
-1. Installing only from [requirements.txt](requirements.txt) may not include everything needed for this pipeline workflow and CLI entry usage.
+1. Installing only from [requirements.txt](requirements.txt) may not include everything needed for this pipeline workflow and CLI entry usage. Option 1 is recommended.
 2. For full functionality, install the package itself with `pip install -e .` after dependencies.
 
-Option 1: venv
+Option 1: [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)
+
+```bash
+micromamba env create /path/to/new/env -f leo-vetter_env.yaml
+micromamba activate leo-vetter
+pip install -e .
+```
+
+Option 2: venv
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-pip install -e .
-```
-
-Option 2: [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)
-
-```bash
-micromamba env create /path/to/new/env -f leo-vetter_env.yaml
-micromamba activate leo-vetter
 pip install -e .
 ```
 
