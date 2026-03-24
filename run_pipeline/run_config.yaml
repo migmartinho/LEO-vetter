@@ -1,6 +1,6 @@
 
 additional_metadata:
-  'TCEs catalog': 'TESS SPOC 2-min TCEs S1-S94 (up to S14-S78 multisector run)'
+  'TCEs catalog': 'metadata for TCE catalog used, e.g. source, version, etc.'
 decision_thresholds:
   "MES": 6.2
   "N_transit": 3

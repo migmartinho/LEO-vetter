@@ -1,6 +1,10 @@
 # LEO Batch Pipeline
 
-This folder contains scripts to run LEO-Vetter over a table of TCEs, classify each TCE, and write per-target and aggregated outputs (metrics and FA/FP threshold-based tests).
+This folder contains scripts to run LEO-Vetter over a batch (table) of TCEs, classify each TCE, and write per-target and aggregated outputs (metrics and FA/FP threshold-based tests).
+
+Current implementation:
+- Flux-level vetting
+- **Pixel-level vetting has not been included in the pipeline** (but can be easily added; requirements: install [transit-diffImage](https://github.com/stevepur/transit-diffImage) which requires target pixel files; see [main README.md](/README.md#installation))
 
 ## Input Format
 
@@ -9,8 +13,8 @@ The main input is a CSV TCE table passed with `--tce_table`.
 Required columns:
 
 1. `target_id` (int): TIC ID
-2. `uid` (str): unique ID per TCE (recommended format: `<tic>_<planetno>_<sector_run>`)
-3. `sector_run` (str): sector-run label
+2. `uid` (str): unique ID per TCE (recommended format: `<tic>-<planetno>_<sector_run>`)
+3. `sector_run` (str): sector run label (e.g., 1-6)
 4. `tce_time0bk` (float): epoch in BTJD
 5. `tce_period` (float): period in days
 6. `tce_duration` (float): duration in hours
@@ -19,13 +23,13 @@ Required columns:
 	 - explicit sectors joined by `_` (example: `1_4_27`), or
 	 - binary-like mask string (auto-converted by the pipeline)
 
-Optional stellar columns (used when not querying TIC):
+Optional stellar columns (used when not querying TIC for the stellar parameters):
 
-1. `tic_smass`, `tic_smass_err`
-2. `tic_sradius`, `tic_sradius_err`
-3. `tic_sdens`, `tic_sdens_err`
-4. `tic_steff`, `tic_steff_err`
-5. `tic_slogg`, `tic_slogg_err`
+1. `tic_smass`, `tic_smass_err`: stellar mass in (M_S)
+2. `tic_sradius`, `tic_sradius_err`: stellar radius in (R_S)
+3. `tic_sdens`, `tic_sdens_err`: stellar density (rho_S)
+4. `tic_steff`, `tic_steff_err`: stellar effective temperature (K)
+5. `tic_slogg`, `tic_slogg_err`: stellar surface gravity (log10(cm/s^2))
 
 Notes:
 
@@ -38,14 +42,14 @@ Minimal CSV (required columns only):
 
 ```csv
 target_id,uid,sector_run,tce_time0bk,tce_period,tce_duration,tce_plnt_num,sectors_observed
-1003831,1003831_1_s1-s3,s1-s3,1355.1234,5.678901,2.40,1,1_2_3
+1003831,1003831-1_S8,8,1518.203536,1.651142,0.758184,1,8
 ```
 
 CSV including optional stellar columns (used when you do not pass `--query_tic_catalog`):
 
 ```csv
 target_id,uid,sector_run,tce_time0bk,tce_period,tce_duration,tce_plnt_num,sectors_observed,tic_smass,tic_smass_err,tic_sradius,tic_sradius_err,tic_sdens,tic_sdens_err,tic_steff,tic_steff_err,tic_slogg,tic_slogg_err
-1003831,1003831_1_s1-3,1-3,1355.1234,5.678901,2.40,1,1_2_3,0.98,0.05,1.02,0.04,1.10,0.15,5750,80,4.42,0.08
+1003831,1003831-1_S8,8,1518.203536,1.651142,0.758184,1,8,0.977,0,1.12196,0,0.691766,0,5550,0,4.32801,0
 ```
 
 ## Environment And Installation
@@ -67,11 +71,11 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Option 2: conda
+Option 2: [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)
 
 ```bash
-conda env create -f leo-vetter_env.yaml
-conda activate leo-vetter
+micromamba env create /path/to/new/env -f leo-vetter_env.yaml
+micromamba activate leo-vetter
 pip install -e .
 ```
 
@@ -101,7 +105,7 @@ Typical steps:
 	 - `LC_DIR`
 	 - `RUN_CONFIG`
 	 - `TCE_TABLE`
-2. Ensure argument name is `--num_processes` (plural) when running [run_pipeline/run_batches_tces.py](run_pipeline/run_batches_tces.py).
+2. Ensure argument name is `--num_processes` (plural) when running [run_pipeline/run_pipeline.py](run_pipeline/run_pipeline.py).
 3. Run:
 
 ```bash
@@ -110,12 +114,12 @@ bash run_pipeline/run_pipeline.sh
 
 ## Run With Python Script
 
-Main runner: [run_pipeline/run_batches_tces.py](run_pipeline/run_batches_tces.py)
+Main runner: [run_pipeline/run_pipeline.py](run_pipeline/run_pipeline.py)
 
 Example:
 
 ```bash
-python run_pipeline/run_batches_tces.py \
+python run_pipeline/run_pipeline.py \
 	--run_dir /path/to/results/run_YYYYMMDD \
 	--lc_dir /path/to/lc_cache \
 	--run_config run_pipeline/run_config.yaml \
@@ -141,7 +145,7 @@ Configuration YAML example is in [run_pipeline/run_config.yaml](run_pipeline/run
 
 ## Expected Outputs
 
-All outputs are written under `--run_dir`.
+All outputs are written under `--run_dir`. See output of example run in [run_pipeline/example](run_pipeline/example/).
 
 Always created:
 
@@ -180,7 +184,7 @@ python run_pipeline/run_aggregate_results.py \
 	Fix: activate the environment and run `pip install -e .` from the repository root.
 
 2. Problem: Run script fails with unrecognized argument `--num_process`
-	Fix: use `--num_processes` (plural) with [run_pipeline/run_batches_tces.py](run_pipeline/run_batches_tces.py).
+	Fix: use `--num_processes` (plural) with [run_pipeline/run_pipeline.py](run_pipeline/run_pipeline.py).
 
 3. Problem: No light curves found / download failures from MAST
 	Fix: verify `--lc_dir`, `--lc_source`, sector list format in `sectors_observed`, and network access. The pipeline retries transient remote errors, but persistent failures still need path/source/network fixes.
@@ -193,3 +197,6 @@ python run_pipeline/run_aggregate_results.py \
 
 6. Problem: Plots are not generated
 	Fix: pass `--plot_modshift_flag` and/or `--plot_summary_flag`. Without flags, plot folders may exist but remain empty.
+
+7. Problem: MAST is down (you see no light curve files being downloaded and run seems to hang/timeout per TIC is reached)
+	Fix: wait until it comes back up or use local target light curve FITS files and add yourself stellar parameters to the TCE input table.

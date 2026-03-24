@@ -6,6 +6,18 @@ from leo_vetter.utils import phasefold, weighted_mean, weighted_err, weighted_st
 from leo_vetter import fits, oddeven, individual, modshift, parameters
 
 
+def _safe_divide(numerator, denominator):
+    """Return numerator/denominator with NaN where denominator is zero/non-finite."""
+    num = np.asarray(numerator, dtype=float)
+    den = np.asarray(denominator, dtype=float)
+    out = np.full(np.broadcast(num, den).shape, np.nan, dtype=float)
+    valid = np.isfinite(den) & (den != 0)
+    np.divide(num, den, out=out, where=valid)
+    if out.shape == ():
+        return float(out)
+    return out
+
+
 class TCELightCurve:
     def __init__(self, tic, time, raw, flux, flux_err, per, epo, dur, planetno=1):
         self.tic = int(tic)
@@ -120,21 +132,25 @@ class TCELightCurve:
         self.sig_r = np.sqrt(sig_r2) if sig_r2 > 0 else 0
         # Estimate signal-to-pink-noise following Pont et al. (2006)
         self.err = np.sqrt(
-            (self.sig_w**2 / self.n_in) + (self.sig_r**2 / self.N_transit)
+            _safe_divide(self.sig_w**2, self.n_in)
+            + _safe_divide(self.sig_r**2, self.N_transit)
         )
-        err_SES = np.sqrt((self.sig_w**2 / n_SES) + self.sig_r**2)
-        err_MES = np.sqrt((self.sig_w**2 / n_MES) + (self.sig_r**2 / N_transit_MES))
-        self.SES_series = dep_SES / err_SES
+        err_SES = np.sqrt(_safe_divide(self.sig_w**2, n_SES) + self.sig_r**2)
+        err_MES = np.sqrt(
+            _safe_divide(self.sig_w**2, n_MES)
+            + _safe_divide(self.sig_r**2, N_transit_MES)
+        )
+        self.SES_series = _safe_divide(dep_SES, err_SES)
         self.dep_series = dep_MES
         self.err_series = err_MES
-        self.MES_series = dep_MES / err_MES
+        self.MES_series = _safe_divide(dep_MES, err_MES)
         self.metrics["sig_w"] = self.sig_w
         self.metrics["sig_r"] = self.sig_r
         self.metrics["err"] = self.err
-        self.metrics["MES"] = self.dep / self.err
+        self.metrics["MES"] = _safe_divide(self.dep, self.err)
         Fmin = np.nanmin(-self.dep_series)
         Fmax = np.nanmax(-self.dep_series)
-        self.metrics["SHP"] = Fmax / (Fmax - Fmin)
+        self.metrics["SHP"] = _safe_divide(Fmax, (Fmax - Fmin))
 
     def compute_flux_metrics(
         self,

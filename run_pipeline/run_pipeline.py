@@ -30,7 +30,7 @@ from pathlib import Path
 import lightkurve as lk
 import numpy as np
 from astroquery.mast import Catalogs
-from multiprocessing import Pool
+from multiprocessing import Pool, TimeoutError as MPTimeoutError
 from tqdm import tqdm
 import logging
 import time
@@ -381,9 +381,9 @@ def check_thresholds_tce(tlc, decision_thresholds, tce_uid, verbose=False):
     """
     
     # FA is True if any tests failed; False otherwise
-    FA, FA_failed_tests = check_thresholds(tlc.metrics, "FA", thresholds=decision_thresholds, verbose=True) 
+    FA, FA_failed_tests = check_thresholds(tlc.metrics, "FA", thresholds=decision_thresholds, verbose=verbose) 
     # FP is True if any tests failed; False otherwise
-    FP, FP_failed_tests = check_thresholds(tlc.metrics, "FP", thresholds=decision_thresholds, verbose=True)
+    FP, FP_failed_tests = check_thresholds(tlc.metrics, "FP", thresholds=decision_thresholds, verbose=verbose)
     
     failed_tests = '_'.join(FA_failed_tests + FP_failed_tests) if (FA_failed_tests or FP_failed_tests) else 'None'
     
@@ -399,7 +399,7 @@ def check_thresholds_tce(tlc, decision_thresholds, tce_uid, verbose=False):
 
     return fa_fp_tests_df
 
-def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, plot_modshift_save_dir=None, plot_summary_save_dir=None, metrics_save_dir=None, fa_fp_tests_save_dir=None, query_tic=False):
+def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, plot_modshift_save_dir=None, plot_summary_save_dir=None, metrics_save_dir=None, fa_fp_tests_save_dir=None, query_tic=False, verbose=False):
     """Processes a single TIC through the pipeline, including light curve retrieval, metric generation, FA/FP classification, and plotting.
     
     :param int tic_id: TIC ID
@@ -415,6 +415,7 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
     :param Path metrics_save_dir: directory to save metrics CSV files
     :param Path fa_fp_tests_save_dir: directory to save FA/FP tests CSV files
     :param bool query_tic: if True, TIC catalog is queried for stellar parameters for each target
+    :param bool verbose: whether to print verbose output during processing, defaults to False
     :return dict: dictionary containing processing results for the TIC
     """
     
@@ -473,7 +474,7 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
             # aa
             tlc_tcelst.append(tlc_tce)
 
-            fa_fp_tests_df_tce = check_thresholds_tce(tlc_tce, decision_thresholds, tce_uid, verbose=True)
+            fa_fp_tests_df_tce = check_thresholds_tce(tlc_tce, decision_thresholds, tce_uid, verbose=verbose)
             fa_fp_tests_df_tic_lst.append(fa_fp_tests_df_tce)
             processed_tces += 1
 
@@ -537,7 +538,7 @@ def read_tce_table(tce_tbl_fp, get_stellar_parameters_tic_from_table=False):
     
     return tce_tbl
 
-def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_source="2min", delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, num_processes=4, additional_metadata=None, query_tic=False, aggregate_checkpoint_tces=0):
+def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_source="2min", delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, num_processes=4, additional_metadata=None, query_tic=False, aggregate_checkpoint_tces=0, verbose=False, tic_timeout=600):
     """Runs the LEO-vetter pipeline for a batch of TCEs specified in a TCE table CSV file.
     
     :param Path tce_tbl_fp: filepath to TCE table CSV file
@@ -552,6 +553,8 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
     :param dict additional_metadata: optional dictionary of additional metadata to include in the saved decision thresholds CSV file
     :param bool query_tic: if True, TIC catalog is queried for stellar parameters for each target
     :param int aggregate_checkpoint_tces: if >0, aggregate results and delete individual CSV files whenever this many new TCEs are processed
+    :param bool verbose: whether to print verbose output during processing, defaults to False
+    :param int tic_timeout: seconds to wait for a single TIC worker before recording it as timed-out and moving on; 0 means no timeout, defaults to 7200
     """
     
     res_dir = Path(res_dir)
@@ -578,7 +581,7 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
     decision_thresholds_df = pd.DataFrame.from_dict(decision_thresholds, orient='index', columns=['threshold'])
     # add metadata to the dataframe
     decision_thresholds_df.attrs['description'] = "Decision thresholds used for FA/FP classification in the LEO-vetter pipeline. If a TCE's metric value exceeds the threshold for a given test, it fails that test. FA is True if any tests failed; FP is True if any tests failed. These thresholds are applied to the metrics computed for each TCE to determine its FA/FP classification."
-    decision_thresholds_df.attrs['source'] = "Defined in run_batches_tces.py and saved here for record-keeping."
+    decision_thresholds_df.attrs['source'] = "Defined in run_pipeline.py and saved here for record-keeping."
     decision_thresholds_df.attrs['notes'] = "These thresholds can be adjusted based on the desired balance between false positives and false negatives. They were chosen based on analysis of known planets and false positives in TESS data, but may be further refined with additional data and testing."
     decision_thresholds_df.attrs['created'] = pd.Timestamp.now().isoformat()
     if additional_metadata:
@@ -630,13 +633,20 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
         for tic_job in tic_jobs:
             async_result = pool.apply_async(
                 process_tic, 
-                args=(*tic_job, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target, plot_modshift_flag, plot_summary_flag, plot_modshift_save_dir, plot_summary_save_dir, metrics_save_dir, fa_fp_tests_save_dir, query_tic),
+                args=(*tic_job, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target, plot_modshift_flag, plot_summary_flag, plot_modshift_save_dir, plot_summary_save_dir, metrics_save_dir, fa_fp_tests_save_dir, query_tic, verbose),
                 callback=lambda _: pbar.update(),
             )
             async_results.append(async_result)
         
         for async_result in async_results:
-            result = async_result.get()
+            try:
+                result = async_result.get(timeout=tic_timeout or None)
+            except MPTimeoutError:
+                logger.error(
+                    "A TIC worker timed out after %s seconds and will be recorded as failed.",
+                    tic_timeout,
+                )
+                result = {"tic_id": None, "status": "timeout", "processed_tces": 0, "failed_sector_runs": 0, "error": f"timed out after {tic_timeout}s"}
             pipeline_results.append(result)
             completed_tces += int(result.get("processed_tces", 0) or 0)
 
@@ -862,6 +872,19 @@ if __name__ == "__main__":
         help="Plot summary plot for each TCE.",
     )
     
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output during processing.",
+    )
+
+    parser.add_argument(
+        "--tic_timeout",
+        type=int,
+        default=600,
+        help="Seconds to wait for a single TIC worker before recording it as timed-out and moving on. 0 means no timeout. Default: 600.",
+    )
+
     args = parser.parse_args()
     
     with open(args.run_config, 'r') as file:
@@ -872,5 +895,5 @@ if __name__ == "__main__":
     
     run_pipeline(args.tce_table, decision_thresholds, save_lc_dir=args.lc_dir, res_dir=args.run_dir, lc_source=args.lc_source, delete_lc_after_target=args.delete_lc_after_target,
                  plot_modshift_flag=args.plot_modshift_flag, plot_summary_flag=args.plot_summary_flag, num_processes=args.num_processes, additional_metadata=additional_metadata, 
-                 query_tic=args.query_tic_catalog, aggregate_checkpoint_tces=args.aggregate_checkpoint_tces)
+                 query_tic=args.query_tic_catalog, aggregate_checkpoint_tces=args.aggregate_checkpoint_tces, verbose=args.verbose, tic_timeout=args.tic_timeout)
     

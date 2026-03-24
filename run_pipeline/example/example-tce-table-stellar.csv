@@ -1,0 +1,2 @@
+target_id,uid,sector_run,tce_time0bk,tce_period,tce_duration,tce_plnt_num,sectors_observed,tic_smass,tic_smass_err,tic_sradius,tic_sradius_err,tic_sdens,tic_sdens_err,tic_steff,tic_steff_err,tic_slogg,tic_slogg_err
+1003831,1003831-1_S8,8,1518.203536,1.651142,0.758184,1,8,0.977,0,1.12196,0,0.691766,0,5550,0,4.32801,0

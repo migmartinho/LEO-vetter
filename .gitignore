@@ -12,5 +12,6 @@ __pycache__/
 
 .vscode/
 
-results/
+runs/
 data/
+run_pipeline/local/
