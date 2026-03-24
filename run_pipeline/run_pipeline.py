@@ -872,6 +872,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--run_dir",
         type=str,
+        required=True,
         help="Path to run directory.",
     )
     parser.add_argument(
@@ -890,7 +891,7 @@ if __name__ == "__main__":
         "--lc_source",
         type=str,
         choices=LC_SOURCE_OPTIONS,
-        default="2min",
+        required=True,
         help="Choose which SPOC light-curve source to use for cache matching and downloads.",
     )
     parser.add_argument(

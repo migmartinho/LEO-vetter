@@ -95,6 +95,7 @@ python -c "import leo_vetter; print('leo_vetter import ok')"
 3. `--run_config` exists and includes `decision_thresholds` and `additional_metadata`.
 4. `--lc_dir` points to your cache/download root and matches `--lc_source` (`2min` or `ffi`).
 5. You are using `--num_processes` (plural) and have chosen an appropriate process count.
+6. Confirm your sector list corresponds to sectors with available TESS SPOC 2-min/HLSP products for TICs of interest.
 
 ## Run With Shell Script
 
@@ -106,10 +107,11 @@ Typical steps:
 	 - `RUN_PIPELINE_PY`
 	 - `RUN_DIR`
 	 - `LC_DIR`
+	 - `LC_SOURCE`
 	 - `RUN_CONFIG`
 	 - `TCE_TABLE`
-2. Ensure argument name is `--num_processes` (plural) when running [run_pipeline/run_pipeline.py](/run_pipeline/run_pipeline.py).
-3. Run:
+	 - You can also adjust other variables that have default values, see both shell and Python scripts.
+2. Run:
 
 ```bash
 bash run_pipeline/run_pipeline.sh
@@ -140,6 +142,12 @@ Common flags:
 3. `--plot_modshift_flag`
 4. `--plot_summary_flag`
 5. `--aggregate_checkpoint_tces N` (periodically aggregates and removes per-target CSVs)
+
+For full CLI options, run:
+
+```bash
+python run_pipeline/run_pipeline.py --help
+```
 
 Configuration YAML example is in [run_pipeline/run_config.yaml](/run_pipeline/run_config.yaml) and must define:
 
@@ -187,16 +195,19 @@ python run_pipeline/run_aggregate_results.py \
 	Fix: activate the environment and run `pip install -e .` from the repository root.
 
 2. Problem: No light curves found / download failures from MAST
-	Fix: verify `--lc_dir`, `--lc_source`, sector list format in `sectors_observed`, and network access. The pipeline retries transient remote errors, but persistent failures still need path/source/network fixes.
+	Fix: verify `--lc_dir`, `--lc_source`, sector list format in `sectors_observed`, and network access. The pipeline retries transient remote errors, but persistent failures still need path/source/network fixes. Ensure that the TICs of interest were observed for the requested sectors in the data collection mode (i.e., TESS SPOC 2min or FFI) you set.
 
-3. Problem: Aggregates missing (`agg_metrics.csv`, `agg_fa_fp_tests.csv`)
+3. Problem: Files were downloaded, but pipeline still says no light curves were found
+	Fix: check for `*_lc.fits` files under your `--lc_dir` tree (not only directories or `*_tp*` paths), and verify file permissions/readability. If needed, clear stale partial downloads and rerun for the TIC.
+
+4. Problem: Aggregates missing (`agg_metrics.csv`, `agg_fa_fp_tests.csv`)
 	Fix: either run with `--aggregate_checkpoint_tces > 0` or run [run_pipeline/run_aggregate_results.py](/run_pipeline/run_aggregate_results.py) after the pipeline run.
 
-4. Problem: Run appears to skip many TCEs unexpectedly
+5. Problem: Run appears to skip many TCEs unexpectedly
 	Fix: check for existing aggregate files in your run directory. The pipeline skips previously processed TCEs found in both aggregate files.
 
-5. Problem: Plots are not generated
+6. Problem: Plots are not generated
 	Fix: pass `--plot_modshift_flag` and/or `--plot_summary_flag`.
 
-6. Problem: MAST is down (you see no light curve files being downloaded and run seems to hang/timeout per TIC is reached)
-	Fix: wait until it comes back up or use local target light curve FITS files and add yourself stellar parameters to the TCE input table.
+7. Problem: MAST is down (you see no light curve files being downloaded and run seems to hang/timeout per TIC is reached)
+	Fix: wait until it comes back up or use local target light curve FITS files and add your own stellar parameters to the TCE input table.
