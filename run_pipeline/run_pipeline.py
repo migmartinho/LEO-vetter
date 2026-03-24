@@ -492,10 +492,10 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
     # save metrics for target's TCEs
     metrics_tic_df = metrics_save_dir / f"metrics_tic{tic_id}.csv"
     with open(metrics_tic_df, "w") as f:
-            writer = csv.writer(f, delimiter=",")
-            for tce_i, tlc_tce in enumerate(tlc_tcelst):
-                if tce_i == 0:
-                    writer.writerow(tlc_tce.metrics.keys())
+        writer = csv.writer(f, delimiter=",")
+        for tce_i, tlc_tce in enumerate(tlc_tcelst):
+            if tce_i == 0:
+                writer.writerow(tlc_tce.metrics.keys())
             writer.writerow(tlc_tce.metrics.values())
 
     if delete_lc_after_target:
@@ -778,14 +778,14 @@ def aggregate_and_cleanup_results(res_dir, logger=None):
         else:
             print(f"Failed to aggregate FA/FP tests: {error}")
 
-    if aggregated_metrics_count > 0:
+    # Only clean up per-target files when both aggregations succeeded, to keep
+    # agg_metrics.csv and agg_fa_fp_tests.csv in sync.
+    if aggregated_metrics_count > 0 and aggregated_fa_fp_count > 0:
         for metrics_file in metrics_dir.glob("metrics_tic*.csv"):
             try:
                 metrics_file.unlink(missing_ok=True)
             except OSError:
                 pass
-
-    if aggregated_fa_fp_count > 0:
         for fa_fp_file in fa_fp_tests_dir.glob("fa_fp_tests_tic*.csv"):
             try:
                 fa_fp_file.unlink(missing_ok=True)
