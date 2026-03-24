@@ -13,6 +13,7 @@ dependencies:
   - matplotlib-base
   - pyyaml
   - tqdm
+  - boto3
   - pip
   - pip:
       - batman-package

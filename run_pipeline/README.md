@@ -3,6 +3,7 @@
 This folder contains scripts to run LEO-Vetter over a batch (table) of TCEs, classify each TCE, and write per-target and aggregated outputs (metrics and FA/FP threshold-based tests).
 
 Current implementation:
+- Designed for both TESS SPOC 2-min and FFI light curves
 - Flux-level vetting
 	- When metric cannot be computed, metric value is returned as NaN
 	- When test cannot be evaluated, the TCE does not fail the test

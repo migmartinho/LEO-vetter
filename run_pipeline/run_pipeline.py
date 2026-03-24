@@ -29,7 +29,8 @@ import pandas as pd
 from pathlib import Path
 import lightkurve as lk
 import numpy as np
-from astroquery.mast import Catalogs
+from astroquery.mast import Catalogs, Observations
+from astroquery.exceptions import RemoteServiceError
 from multiprocessing import Pool, TimeoutError as MPTimeoutError
 from tqdm import tqdm
 import logging
@@ -43,6 +44,8 @@ from leo_vetter.stellar import quadratic_ldc
 from leo_vetter.main import TCELightCurve
 from leo_vetter.plots import plot_modshift, plot_summary
 from leo_vetter.thresholds import check_thresholds
+
+Observations.enable_cloud_dataset()
 
 
 TIC_COLUMNS = ["rad", "mass", "rho", "Teff", "logg"]
@@ -85,16 +88,30 @@ def is_retryable_remote_error(error):
     :return bool: True if the error is a retryable remote error, False otherwise
     """
     
-    return isinstance(
-        error,
-        (
-            RequestException,
-            HTTPError,
-            ConnectionError,
-            TimeoutError,
-            OSError,
-        ),
+    retryable_types = (
+        RequestException,
+        HTTPError,
+        ConnectionError,
+        TimeoutError,
+        OSError,
+        RemoteServiceError,
     )
+    
+    if not isinstance(error, retryable_types):
+        return False
+    
+    # Check for transient MAST error indicators in message
+    error_msg = str(error).lower()
+    transient_indicators = [
+        'timeout',
+        'pool',
+        'gateway',
+        'service unavailable',
+        'tempdb',
+        'connection',
+    ]
+    
+    return any(indicator in error_msg for indicator in transient_indicators)
 
 
 def retry_remote_call(operation, description, attempts=REMOTE_RETRY_ATTEMPTS):
@@ -229,7 +246,7 @@ def get_cached_lc_files(tic, sector_numbers, save_lc_dir, lc_source):
         local_lc_files = []
         for sector_token in sector_tokens:
             local_lc_files.extend(
-                save_lc_dir.rglob(f"hlsp_tess-spoc_tess_phot_{tic_pattern}-{sector_token}_tess_v1_tp.fits")
+                save_lc_dir.rglob(f"hlsp_tess-spoc_tess_phot_{tic_pattern}-{sector_token}_tess_v1_lc.fits")
             )
         return sorted(set(local_lc_files))
 
@@ -250,28 +267,77 @@ def get_lc_data(tic, sectors_observed, save_lc_dir, lc_source):
 
     local_lc_files = get_cached_lc_files(tic, sectors_numbers, save_lc_dir, lc_source)
 
-    if local_lc_files:
-        lcs = lk.LightCurveCollection([lk.read(local_lc_file) for local_lc_file in local_lc_files])
-    else:
-        author = "SPOC" if lc_source == "2min" else "TESS-SPOC"
-        search_result = retry_remote_call(
-            lambda: lk.search_lightcurve(
-                f"TIC {tic}",
-                mission="TESS",
-                author=author,
-                sector=sectors_numbers,
-            ),
-            f"Light curve search for TIC {tic} sectors {sectors_observed}",
+    if len(local_lc_files) == 0:
+        # lcs = lk.LightCurveCollection([lk.read(local_lc_file) for local_lc_file in local_lc_files])
+    # else:
+        # author = "SPOC" if lc_source == "2min" else "TESS-SPOC"
+        # search_result = retry_remote_call(
+        #     lambda: lk.search_lightcurve(
+        #         f"TIC {tic}",
+        #         mission="TESS",
+        #         author=author,
+        #         sector=sectors_numbers,
+        #     ),
+        #     f"Light curve search for TIC {tic} sectors {sectors_observed}",
+        # )
+        # lcs = retry_remote_call(
+        #     lambda: search_result.download_all(download_dir=str(save_lc_dir)),
+        #     f"Light curve download for TIC {tic} sectors {sectors_observed}",
+        # )
+        
+        # Build query parameters conditionally
+        # FFI SPOC data is in HLSP collection with provenance_name='TESS-SPOC'
+        # 2-min SPOC data is in TESS collection
+        if lc_source == 'ffi':
+            query_kwargs = {
+                'target_name': tic,
+                'obs_collection': 'HLSP',
+                'provenance_name': 'TESS-SPOC',
+            }
+        else:  # 2min
+            query_kwargs = {
+                'target_name': tic,
+                'obs_collection': 'TESS',
+            }
+        
+        obs_table = retry_remote_call(
+            lambda: Observations.query_criteria(**query_kwargs),
+            f"MAST observation query for TIC {tic} ({lc_source})",
         )
-        lcs = retry_remote_call(
-            lambda: search_result.download_all(download_dir=str(save_lc_dir)),
-            f"Light curve download for TIC {tic} sectors {sectors_observed}",
+        if len(obs_table) == 0:
+            raise ValueError(f'No observations found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
+        # get table with all available products for queried observations
+        products = retry_remote_call(
+            lambda: Observations.get_product_list(obs_table),
+            f"MAST product list query for TIC {tic} ({lc_source})",
         )
+
+        if len(products) == 0:
+            raise ValueError(f'No products found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
+        
+        # Combined filter for light curve FITS files in sectors of interest
+        # (exclude 20-sec light curves, use substring matching for sector patterns)
+        sector_strings = [f'-s{str(sector).zfill(4)}' for sector in sectors_numbers]
+        product_filenames = products['productFilename']
+        mask = [
+            fn.endswith('lc.fits') and 
+            'fast-lc' not in fn and 
+            any(sector_str in fn for sector_str in sector_strings)
+            for fn in product_filenames
+        ]
+        lc_products = products[mask]
+        if len(lc_products) == 0:
+            raise ValueError(f'No TESS light curve files found for TIC {tic} in {lc_source} data. Skipping.')
+        
+        _ = Observations.download_products(lc_products, download_dir=str(save_lc_dir), mrp_only=False)
+        
         local_lc_files = get_cached_lc_files(tic, sectors_numbers, save_lc_dir, lc_source)
 
+    lcs = lk.LightCurveCollection([lk.read(local_lc_file) for local_lc_file in local_lc_files])
+    
     if lcs is None or len(lcs) == 0:
         raise FileNotFoundError(
-            f"No light curves available for TIC {tic} sectors {sectors_observed}"
+            f"No TESS light curves available for TIC {tic} in sectors {sectors_observed} for {lc_source} data either locally or at the MAST. Skipping."
         )
     
     # Stitch light curves together into a multi-sector light curve
