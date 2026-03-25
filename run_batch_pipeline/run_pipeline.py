@@ -31,7 +31,7 @@ import lightkurve as lk
 import numpy as np
 from astroquery.mast import Catalogs, Observations
 from astroquery.exceptions import RemoteServiceError
-from multiprocessing import Pool, TimeoutError as MPTimeoutError
+from multiprocessing import Pool
 from tqdm import tqdm
 import logging
 import time
@@ -261,6 +261,28 @@ def get_cached_lc_files(tic, sector_numbers, save_lc_dir, lc_source):
         return sorted(set(local_lc_files))
 
     raise ValueError(f"Unsupported lc_source: {lc_source}")
+
+
+def cleanup_cached_lc_files_for_tic(tic, save_lc_dir, lc_source, lc_files_to_cleanup=None):
+    """Delete cached light-curve files for a TIC.
+
+    Uses both explicitly tracked files and a full TIC cache scan so cleanup still
+    works when failures happen before files are tracked.
+    """
+
+    files_to_delete = set(lc_files_to_cleanup or [])
+
+    try:
+        files_to_delete.update(get_cached_lc_files(tic, None, save_lc_dir, lc_source))
+    except Exception:
+        # Cleanup should be best-effort and never break TIC processing.
+        pass
+
+    for lc_file in sorted(files_to_delete):
+        try:
+            lc_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def get_lc_data(tic, sectors_observed, save_lc_dir, lc_source):
@@ -536,6 +558,8 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
                 "Skipping TIC %s after light-curve retrieval failure (all sectors mode)",
                 tic_id,
             )
+            if delete_lc_after_target:
+                cleanup_cached_lc_files_for_tic(tic_id, save_lc_dir, lc_source, lc_files_to_cleanup)
             return {
                 "tic_id": tic_id,
                 "status": "failed",
@@ -582,8 +606,7 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
 
             tlc_tce = generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, planetno=planetno)
             tlc_tce.metrics['uid'] = tce_uid
-            # print(tlc_tce.metrics)
-            # aa
+
             tlc_tcelst.append(tlc_tce)
 
             fa_fp_tests_df_tce = check_thresholds_tce(tlc_tce, decision_thresholds, tce_uid, verbose=verbose)
@@ -611,11 +634,7 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
             writer.writerow(tlc_tce.metrics.values())
 
     if delete_lc_after_target:
-        for lc_file in sorted(lc_files_to_cleanup):
-            try:
-                lc_file.unlink(missing_ok=True)
-            except OSError:
-                pass
+        cleanup_cached_lc_files_for_tic(tic_id, save_lc_dir, lc_source, lc_files_to_cleanup)
 
     status = "success" if not failed_sector_runs else "partial"
     return {
@@ -748,36 +767,70 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
     completed_tces = 0
     last_checkpoint_tces = 0
     with Pool(processes=num_processes) as pool, tqdm(total=len(tic_jobs), desc='Processing TICs', unit='TIC') as pbar:
-        
-        async_results = []
+
+        pending_results = {}
         for tic_job in tic_jobs:
             async_result = pool.apply_async(
                 process_tic, 
                 args=(*tic_job, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target, plot_modshift_flag, plot_summary_flag, plot_modshift_save_dir, plot_summary_save_dir, metrics_save_dir, fa_fp_tests_save_dir, query_tic, verbose),
-                callback=lambda _: pbar.update(),
             )
-            async_results.append(async_result)
-        
-        for async_result in async_results:
-            try:
-                result = async_result.get(timeout=tic_timeout or None)
-            except MPTimeoutError:
-                logger.error(
-                    "A TIC worker timed out after %s seconds and will be recorded as failed.",
-                    tic_timeout,
-                )
-                result = {"tic_id": None, "status": "timeout", "processed_tces": 0, "failed_sector_runs": 0, "error": f"timed out after {tic_timeout}s"}
-            pipeline_results.append(result)
-            completed_tces += int(result.get("processed_tces", 0) or 0)
+            pending_results[async_result] = time.time()
 
-            if aggregate_checkpoint_tces > 0:
-                if (completed_tces - last_checkpoint_tces) >= aggregate_checkpoint_tces:
+        while pending_results:
+            finished_results = []
+
+            for async_result, start_time in list(pending_results.items()):
+                result = None
+
+                if async_result.ready():
+                    try:
+                        result = async_result.get(timeout=0)
+                    except Exception as error:
+                        logger.exception(
+                            "A TIC worker failed with an exception and will be recorded as failed: %s",
+                            error,
+                        )
+                        result = {
+                            "tic_id": None,
+                            "status": "failed",
+                            "processed_tces": 0,
+                            "failed_sector_runs": 0,
+                            "error": str(error),
+                        }
+                elif tic_timeout and (time.time() - start_time) > tic_timeout:
+                    logger.error(
+                        "A TIC worker timed out after %s seconds and will be recorded as failed.",
+                        tic_timeout,
+                    )
+                    result = {
+                        "tic_id": None,
+                        "status": "timeout",
+                        "processed_tces": 0,
+                        "failed_sector_runs": 0,
+                        "error": f"timed out after {tic_timeout}s",
+                    }
+
+                if result is None:
+                    continue
+
+                finished_results.append(async_result)
+                pipeline_results.append(result)
+                completed_tces += int(result.get("processed_tces", 0) or 0)
+                pbar.update(1)
+
+                if aggregate_checkpoint_tces > 0 and (completed_tces - last_checkpoint_tces) >= aggregate_checkpoint_tces:
                     logger.info(
                         "Reached checkpoint at %s processed TCEs. Aggregating and cleaning up individual CSV files.",
                         completed_tces,
                     )
                     aggregate_and_cleanup_results(res_dir, logger=logger)
                     last_checkpoint_tces = completed_tces
+
+            for async_result in finished_results:
+                pending_results.pop(async_result, None)
+
+            if pending_results:
+                time.sleep(1)
 
     if aggregate_checkpoint_tces > 0:
         logger.info("Final aggregate/cleanup pass after pipeline completion")

@@ -107,11 +107,11 @@ python -c "import leo_vetter; print('leo_vetter import ok')"
 
 ## Run With Shell Script
 
-Template script: [run_pipeline/run_pipeline.sh](/run_pipeline/run_pipeline.sh)
+Template script: [run_batch_pipeline/run_pipeline.sh](/run_batch_pipeline/run_pipeline.sh)
 
 Typical steps:
 
-1. Edit path variables in [run_pipeline/run_pipeline.sh](/run_pipeline/run_pipeline.sh):
+1. Edit path variables in [run_batch_pipeline/run_pipeline.sh](/run_batch_pipeline/run_pipeline.sh):
 	 - `RUN_PIPELINE_PY`
 	 - `RUN_DIR`
 	 - `LC_DIR`
@@ -122,20 +122,20 @@ Typical steps:
 2. Run:
 
 ```bash
-bash run_pipeline/run_pipeline.sh
+bash run_batch_pipeline/run_pipeline.sh
 ```
 
 ## Run With Python Script
 
-Main runner: [run_pipeline/run_pipeline.py](/run_pipeline/run_pipeline.py)
+Main runner: [run_batch_pipeline/run_pipeline.py](/run_batch_pipeline/run_pipeline.py)
 
 Example:
 
 ```bash
-python run_pipeline/run_pipeline.py \
+python run_batch_pipeline/run_pipeline.py \
 	--run_dir /path/to/results/run_YYYYMMDD \
 	--lc_dir /path/to/lc_cache \
-	--run_config run_pipeline/run_config.yaml \
+	--run_config run_batch_pipeline/run_config.yaml \
 	--lc_source 2min \
 	--tce_table /path/to/tces.csv \
 	--num_processes 6 \
@@ -155,17 +155,17 @@ Common flags:
 For full CLI options, run:
 
 ```bash
-python run_pipeline/run_pipeline.py --help
+python run_batch_pipeline/run_pipeline.py --help
 ```
 
-Configuration YAML example is in [run_pipeline/run_config.yaml](/run_pipeline/run_config.yaml) and must define:
+Configuration YAML example is in [run_batch_pipeline/run_config.yaml](/run_batch_pipeline/run_config.yaml) and must define:
 
 1. `decision_thresholds`
 2. `additional_metadata`
 
 ## Expected Outputs
 
-All outputs are written under `--run_dir`. See output of example run in [run_pipeline/example](/run_pipeline/example/).
+All outputs are written under `--run_dir`. See output of example run in [run_batch_pipeline/example](/run_batch_pipeline/example/).
 
 Always created:
 
@@ -185,14 +185,14 @@ Aggregated outputs:
 1. `agg_metrics.csv`
 2. `agg_fa_fp_tests.csv`
 
-These are produced by periodic checkpoint aggregation (`--aggregate_checkpoint_tces > 0`) and/or by running [run_pipeline/run_aggregate_results.py](/run_pipeline/run_aggregate_results.py).
+These are produced by periodic checkpoint aggregation (`--aggregate_checkpoint_tces > 0`) and/or by running [run_batch_pipeline/run_aggregate_results.py](/run_batch_pipeline/run_aggregate_results.py).
 
 ## Aggregate Results Separately
 
 You can aggregate an existing run directory manually:
 
 ```bash
-python run_pipeline/run_aggregate_results.py \
+python run_batch_pipeline/run_aggregate_results.py \
 	--input_dir /path/to/results/run_YYYYMMDD \
 	--output_metrics_file /path/to/results/run_YYYYMMDD/agg_metrics.csv \
 	--output_fa_fp_file /path/to/results/run_YYYYMMDD/agg_fa_fp_tests.csv
@@ -210,7 +210,7 @@ python run_pipeline/run_aggregate_results.py \
 	Fix: check for `*_lc.fits` files under your `--lc_dir` tree, and verify file permissions/readability. If needed, clear stale partial downloads and rerun for the TIC.
 
 4. Problem: Aggregates missing (`agg_metrics.csv`, `agg_fa_fp_tests.csv`)
-	Fix: either run with `--aggregate_checkpoint_tces > 0` or run [run_pipeline/run_aggregate_results.py](/run_pipeline/run_aggregate_results.py) after the pipeline run.
+	Fix: either run with `--aggregate_checkpoint_tces > 0` or run [run_batch_pipeline/run_aggregate_results.py](/run_batch_pipeline/run_aggregate_results.py) after the pipeline run.
 
 5. Problem: Run appears to skip many TCEs unexpectedly
 	Fix: check for existing aggregate files in your run directory. The pipeline skips previously processed TCEs found in both aggregate files.

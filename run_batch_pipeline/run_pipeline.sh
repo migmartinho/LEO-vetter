@@ -1,8 +1,8 @@
 
-RUN_PIPELINE_PY=/path/to/leo-vetter/codebase/run_pipeline/run_pipeline.py
+RUN_PIPELINE_PY=/path/to/leo-vetter/codebase/run_batch_pipeline/run_pipeline.py
 RUN_DIR=/path/to/save/pipeline/results
 LC_DIR=/path/to/light/curve/files
-RUN_CONFIG=/path/to/leo-vetter/codebase/run_pipeline/run_config.yaml
+RUN_CONFIG=/path/to/leo-vetter/codebase/run_batch_pipeline/run_config.yaml
 LC_SOURCE=2min  # 2min, ffi
 TCE_TABLE=/path/to/tce_table.csv
 NUM_PROCESSES=1

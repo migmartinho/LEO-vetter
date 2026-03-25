@@ -2,7 +2,7 @@
 
 ### Running on batches of TCEs ###
 
-**See [README.md](/run_pipeline/README.md) for instructions on how to run LEO-Vetter for batches of TCEs.**
+**See [README.md](/run_batch_pipeline/README.md) for instructions on how to run LEO-Vetter for batches of TCEs.**
 
 LEO-vetter is a tool for automated vetting of transit signals found in light curve data. Inspired by the Kepler Robovetter, LEO computes vetting metrics and then checks those metrics against a series of pass-fail thresholds. If a signal passes all checks, it is considered a planet candidate (PC). If a signal fails at least one test, it may be either an astrophysical false positive (FP; e.g. eclipsing binary, nearby eclipsing signal) or false alarm (FA; e.g. systematic, stellar variability). LEO also produces vetting reports for quick manual inspection of the signal.
 
