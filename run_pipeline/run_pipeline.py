@@ -759,9 +759,22 @@ def aggregate_metrics(metrics_dir, output_fp):
         return 0
     
     all_metrics = []
+    skipped_files = 0
     for metrics_file in metrics_files:
-        df = pd.read_csv(metrics_file)
+        try:
+            df = pd.read_csv(metrics_file)
+        except (pd.errors.EmptyDataError, pd.errors.ParserError) as error:
+            print(f"Skipping unreadable metrics file {metrics_file.name}: {error}")
+            skipped_files += 1
+            continue
         all_metrics.append(df)
+
+    if not all_metrics:
+        print(
+            "No valid per-target metrics files were found to aggregate "
+            f"(skipped {skipped_files} files)."
+        )
+        return 0
     
     all_metrics_df = pd.concat(all_metrics, ignore_index=True)
     
@@ -792,9 +805,22 @@ def aggregate_fa_fp_tests(fa_fp_tests_dir, output_fp):
         return 0
     
     all_fa_fp_tests = []
+    skipped_files = 0
     for fa_fp_tests_file in fa_fp_files:
-        df = pd.read_csv(fa_fp_tests_file)
+        try:
+            df = pd.read_csv(fa_fp_tests_file)
+        except (pd.errors.EmptyDataError, pd.errors.ParserError) as error:
+            print(f"Skipping unreadable FA/FP file {fa_fp_tests_file.name}: {error}")
+            skipped_files += 1
+            continue
         all_fa_fp_tests.append(df)
+
+    if not all_fa_fp_tests:
+        print(
+            "No valid per-target FA/FP files were found to aggregate "
+            f"(skipped {skipped_files} files)."
+        )
+        return 0
     
     all_fa_fp_tests_df = pd.concat(all_fa_fp_tests, ignore_index=True)
     
