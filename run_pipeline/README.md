@@ -100,11 +100,10 @@ python -c "import leo_vetter; print('leo_vetter import ok')"
 ## Pre-Run Checklist
 
 1. Environment is activated and `pip install -e .` completed.
-2. `--tce_table` exists and contains all required columns.
+2. `--tce_table` exists and contains all required columns with the right formats/data types.
 3. `--run_config` exists and includes `decision_thresholds` and `additional_metadata`.
 4. `--lc_dir` points to your cache/download root and matches `--lc_source` (`2min` or `ffi`).
-5. You are using `--num_processes` (plural) and have chosen an appropriate process count.
-6. Confirm your sector list corresponds to sectors with available TESS SPOC 2-min/HLSP products for TICs of interest.
+5. Confirm your sector list corresponds to sectors with available TESS SPOC 2-min/HLSP products for TICs of interest.
 
 ## Run With Shell Script
 
@@ -208,7 +207,7 @@ python run_pipeline/run_aggregate_results.py \
 	Fix: verify `--lc_dir`, `--lc_source`, sector list format in `sectors_observed`, and network access. The pipeline retries transient remote errors, but persistent failures still need path/source/network fixes. Ensure that the TICs of interest were observed for the requested sectors in the data collection mode (i.e., TESS SPOC 2min or FFI) you set.
 
 3. Problem: Files were downloaded, but pipeline still says no light curves were found
-	Fix: check for `*_lc.fits` files under your `--lc_dir` tree (not only directories or `*_tp*` paths), and verify file permissions/readability. If needed, clear stale partial downloads and rerun for the TIC.
+	Fix: check for `*_lc.fits` files under your `--lc_dir` tree, and verify file permissions/readability. If needed, clear stale partial downloads and rerun for the TIC.
 
 4. Problem: Aggregates missing (`agg_metrics.csv`, `agg_fa_fp_tests.csv`)
 	Fix: either run with `--aggregate_checkpoint_tces > 0` or run [run_pipeline/run_aggregate_results.py](/run_pipeline/run_aggregate_results.py) after the pipeline run.
