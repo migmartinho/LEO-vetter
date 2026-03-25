@@ -22,9 +22,10 @@ Required columns:
 5. `tce_period` (float): period in days
 6. `tce_duration` (float): duration in hours
 7. `tce_plnt_num` (int): candidate number for the target
-8. `sectors_observed` (str): sectors in which the target was observed for this run. Either:
+8. `sectors_observed` (str): sectors in which the target was observed for this run. It can be a mix of the following options for different TCEs!):
 	 - explicit sectors joined by `_` (example: `1_4_27`), or
 	 - binary-like mask string (auto-converted by the pipeline to explicit sectors joined by `_`) (example: `0100001` converts to `1_6`)
+	 - `None` or `np.nan`; if observed sectors are not provided, then all available sectors for the target will be used
 
 Optional stellar columns (used when not querying TIC for the stellar parameters):
 
@@ -38,11 +39,19 @@ Notes:
 
 1. `tce_duration` is converted from hours to days internally.
 2. If `--query_tic_catalog` is used, stellar parameters are pulled from TIC and table stellar columns are not required.
+3. You can choose which sectors to use for each TCE. Keep in mind that some TCE ephemerides, especially those derived from early single-sector TESS runs, may be stale.
 
 ## Example TCE Table
 
 Minimal CSV (required columns only):
 
+- without observed sectors
+```csv
+target_id,uid,sector_run,tce_time0bk,tce_period,tce_duration,tce_plnt_num,sectors_observed
+1003831,1003831-1_S8,,1518.203536,1.651142,0.758184,1,8
+```
+
+- with observed sectors
 ```csv
 target_id,uid,sector_run,tce_time0bk,tce_period,tce_duration,tce_plnt_num,sectors_observed
 1003831,1003831-1_S8,8,1518.203536,1.651142,0.758184,1,8
@@ -142,6 +151,7 @@ Common flags:
 3. `--plot_modshift_flag`
 4. `--plot_summary_flag`
 5. `--aggregate_checkpoint_tces N` (periodically aggregates and removes per-target CSVs)
+6. `--use_all_observed_sectors` (overwrites `sectors_observed` value in the input table and uses all available sectors for the target)
 
 For full CLI options, run:
 

@@ -149,17 +149,18 @@ def convert_sectors_observed_binary_string_to_int_string(sectors_observed_binary
     """Convert `sectors_observed` from a binary string to a string with sectors numbers separated by "_".
 
     :param str sectors_observed_binary_string: sectors observed in binary format
-    :raises ValueError: `sectors_observed` is NaN
-    :raises ValueError: `sectors_observed` is empty
-    :return str: `sectors_observed` in new format
+    :return str|None: `sectors_observed` in new format, or None when missing/empty
     """
 
     if pd.isna(sectors_observed_binary_string):
-        raise ValueError("sectors_observed_binary_string cannot be NaN")
+        return None
 
     sectors_observed_binary_string = str(sectors_observed_binary_string).strip()
     if not sectors_observed_binary_string:
-        raise ValueError("sectors_observed_binary_string cannot be empty")
+        return None
+
+    if sectors_observed_binary_string.lower() in {"nan", "none"}:
+        return None
 
     # Already in explicit format like "1_2_27".
     if '_' in sectors_observed_binary_string:
@@ -232,22 +233,31 @@ def get_cached_lc_files(tic, sector_numbers, save_lc_dir, lc_source):
     """
 
     tic_pattern = f"{int(tic):016d}"
-    sector_tokens = {f"s{sector:04d}" for sector in sector_numbers}
 
     if lc_source == "2min":
-        local_lc_files = []
-        for sector_token in sector_tokens:
-            local_lc_files.extend(
-                save_lc_dir.rglob(f"tess*-{sector_token}-{tic_pattern}-*_lc.fits")
-            )
+        if sector_numbers is None:
+            # Get all 2-min light curves for this TIC (no sector filtering)
+            local_lc_files = list(save_lc_dir.rglob(f"tess*-s????-{tic_pattern}-*_lc.fits"))
+        else:
+            sector_tokens = {f"s{sector:04d}" for sector in sector_numbers}
+            local_lc_files = []
+            for sector_token in sector_tokens:
+                local_lc_files.extend(
+                    save_lc_dir.rglob(f"tess*-{sector_token}-{tic_pattern}-*_lc.fits")
+                )
         return sorted(set(local_lc_files))
 
     if lc_source == "ffi":
-        local_lc_files = []
-        for sector_token in sector_tokens:
-            local_lc_files.extend(
-                save_lc_dir.rglob(f"hlsp_tess-spoc_tess_phot_{tic_pattern}-{sector_token}_tess_v1_lc.fits")
-            )
+        if sector_numbers is None:
+            # Get all FFI light curves for this TIC (no sector filtering)
+            local_lc_files = list(save_lc_dir.rglob(f"hlsp_tess-spoc_tess_phot_{tic_pattern}-s????_tess_v1_lc.fits"))
+        else:
+            sector_tokens = {f"s{sector:04d}" for sector in sector_numbers}
+            local_lc_files = []
+            for sector_token in sector_tokens:
+                local_lc_files.extend(
+                    save_lc_dir.rglob(f"hlsp_tess-spoc_tess_phot_{tic_pattern}-{sector_token}_tess_v1_lc.fits")
+                )
         return sorted(set(local_lc_files))
 
     raise ValueError(f"Unsupported lc_source: {lc_source}")
@@ -257,13 +267,13 @@ def get_lc_data(tic, sectors_observed, save_lc_dir, lc_source):
     """Gets light curve data for TIC ID `tic` in sectors `sectors_observed`.
     
     :param int tic: TIC ID
-    :param str sectors_observed: sectors observed, separated by "_"
+    :param str|None sectors_observed: sectors observed separated by "_", or None to use all sectors
     :param str save_lc_dir: light curve directory
     :param str lc_source: either "2min" or "ffi" for SPOC 2-min/FFI light curves, respectively
     :return tuple: light curve object and list of local light curve files
     """
-    
-    sectors_numbers = [int(sector) for sector in sectors_observed.split('_')]
+
+    sectors_numbers = None if sectors_observed is None else [int(sector) for sector in sectors_observed.split('_')]
 
     local_lc_files = get_cached_lc_files(tic, sectors_numbers, save_lc_dir, lc_source)
 
@@ -284,8 +294,8 @@ def get_lc_data(tic, sectors_observed, save_lc_dir, lc_source):
         #     lambda: search_result.download_all(download_dir=str(save_lc_dir)),
         #     f"Light curve download for TIC {tic} sectors {sectors_observed}",
         # )
-        
-        # Build query parameters conditionally
+        # Build query parameters conditionally.
+        # If sectors_observed is None, we skip sector filtering in product filtering.
         # FFI SPOC data is in HLSP collection with provenance_name='TESS-SPOC'
         # 2-min SPOC data is in TESS collection
         if lc_source == 'ffi':
@@ -299,7 +309,6 @@ def get_lc_data(tic, sectors_observed, save_lc_dir, lc_source):
                 'target_name': tic,
                 'obs_collection': 'TESS',
             }
-        
         obs_table = retry_remote_call(
             lambda: Observations.query_criteria(**query_kwargs),
             f"MAST observation query for TIC {tic} ({lc_source})",
@@ -314,17 +323,25 @@ def get_lc_data(tic, sectors_observed, save_lc_dir, lc_source):
 
         if len(products) == 0:
             raise ValueError(f'No products found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
-        
-        # Combined filter for light curve FITS files in sectors of interest
-        # (exclude 20-sec light curves, use substring matching for sector patterns)
-        sector_strings = [f'-s{str(sector).zfill(4)}' for sector in sectors_numbers]
+
+        # Apply sector filtering only if sectors_numbers is not None
         product_filenames = products['productFilename']
-        mask = [
-            fn.endswith('lc.fits') and 
-            'fast-lc' not in fn and 
-            any(sector_str in fn for sector_str in sector_strings)
-            for fn in product_filenames
-        ]
+        if sectors_numbers is not None:
+            sector_strings = [f'-s{str(sector).zfill(4)}' for sector in sectors_numbers]
+            mask = [
+                fn.endswith('lc.fits') and 
+                'fast-lc' not in fn and 
+                any(sector_str in fn for sector_str in sector_strings)
+                for fn in product_filenames
+            ]
+        else:
+            # No sector filtering - get all light curves
+            mask = [
+                fn.endswith('lc.fits') and 
+                'fast-lc' not in fn
+                for fn in product_filenames
+            ]
+        
         lc_products = products[mask]
         if len(lc_products) == 0:
             raise ValueError(f'No TESS light curve files found for TIC {tic} in {lc_source} data. Skipping.')
@@ -504,28 +521,57 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
     processed_tces = 0
     failed_sector_runs = []
     tlc_tcelst = []
+    
+    # Use all-sectors mode when all rows for this TIC have empty sectors_observed.
+    use_all_sectors_mode = tic_data["sectors_observed"].isna().all()
+    
+    # If using all sectors, fetch light curves once before the sector_run loop
+    lc_tic = None
+    if use_all_sectors_mode:
+        try:
+            lc_tic, lc_files_used = get_lc_data(tic_id, None, save_lc_dir, lc_source)
+            lc_files_to_cleanup.update(lc_files_used)
+        except Exception as error:
+            logger.exception(
+                "Skipping TIC %s after light-curve retrieval failure (all sectors mode)",
+                tic_id,
+            )
+            return {
+                "tic_id": tic_id,
+                "status": "failed",
+                "processed_tces": 0,
+                "failed_sector_runs": tic_data["sector_run"].nunique(),
+                "error": str(error),
+            }
+    
     for sector_run, tic_data_sector_run in tqdm(tic_data.groupby('sector_run'), desc=f'Processing TIC {tic_id}', unit='sector run', total=tic_data["sector_run"].nunique()):
 
         sectors_observed = tic_data_sector_run["sectors_observed"].iloc[0]
 
-        try:
-            lc_tic, lc_files_used = get_lc_data(tic_id, sectors_observed, save_lc_dir, lc_source)
-        except Exception as error:
-            logger.exception(
-                "Skipping TIC %s sector run %s after light-curve retrieval failure",
-                tic_id,
-                sector_run,
-            )
-            failed_sector_runs.append(
-                {
-                    "sector_run": sector_run,
-                    "sectors_observed": sectors_observed,
-                    "error": str(error),
-                }
-            )
-            continue
+        # Allow mixed tables: empty sectors_observed in a sector_run means all sectors for that run.
+        if pd.isna(sectors_observed):
+            sectors_observed = None
 
-        lc_files_to_cleanup.update(lc_files_used)
+        # Skip light curve retrieval if already fetched in all-sectors mode
+        if not use_all_sectors_mode:
+            try:
+                lc_tic, lc_files_used = get_lc_data(tic_id, sectors_observed, save_lc_dir, lc_source)
+            except Exception as error:
+                logger.exception(
+                    "Skipping TIC %s sector run %s after light-curve retrieval failure",
+                    tic_id,
+                    sector_run,
+                )
+                failed_sector_runs.append(
+                    {
+                        "sector_run": sector_run,
+                        "sectors_observed": sectors_observed,
+                        "error": str(error),
+                    }
+                )
+                continue
+
+            lc_files_to_cleanup.update(lc_files_used)
 
         for tce_uid, tce_data in tqdm(tic_data_sector_run.iterrows(), desc=f'Processing TIC {tic_id} sector run {sector_run}', unit='TCE', total=tic_data_sector_run.shape[0]):
 
@@ -581,7 +627,7 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
             f"{item['sector_run']}: {item['error']}" for item in failed_sector_runs
         ),
     }
-
+    
 
 def read_tce_table(tce_tbl_fp, get_stellar_parameters_tic_from_table=False):
     """Reads TCE table and prepares it for the run.
@@ -604,7 +650,7 @@ def read_tce_table(tce_tbl_fp, get_stellar_parameters_tic_from_table=False):
     
     return tce_tbl
 
-def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_source="2min", delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, num_processes=4, additional_metadata=None, query_tic=False, aggregate_checkpoint_tces=0, verbose=False, tic_timeout=600):
+def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_source="2min", delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, num_processes=4, additional_metadata=None, query_tic=False, aggregate_checkpoint_tces=0, verbose=False, tic_timeout=600, use_all_observed_sectors=False):
     """Runs the LEO-vetter pipeline for a batch of TCEs specified in a TCE table CSV file.
     
     :param Path tce_tbl_fp: filepath to TCE table CSV file
@@ -621,6 +667,7 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
     :param int aggregate_checkpoint_tces: if >0, aggregate results and delete individual CSV files whenever this many new TCEs are processed
     :param bool verbose: whether to print verbose output during processing, defaults to False
     :param int tic_timeout: seconds to wait for a single TIC worker before recording it as timed-out and moving on; 0 means no timeout, defaults to 7200
+    :param bool use_all_observed_sectors: if True, ignore table sector filters and process each TIC using all available sectors from the light-curve query (no pre-query pass), defaults to False
     """
     
     res_dir = Path(res_dir)
@@ -664,6 +711,12 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
         get_stellar_params_from_tce_table = True
     tce_tbl = read_tce_table(tce_tbl_fp, get_stellar_parameters_tic_from_table=get_stellar_params_from_tce_table)
     
+    # Optional override: ignore table-provided sector filters.
+    # This does NOT do a pre-query; get_lc_data will fetch without sector filtering.
+    if use_all_observed_sectors:
+        logger.info("use_all_observed_sectors=True: ignoring sectors_observed from table (single-query mode)")
+        tce_tbl['sectors_observed'] = None
+    
     # Check for previously processed TCEs in aggregate results and skip them to avoid redundant processing
     agg_metrics_fp = res_dir / "agg_metrics.csv"
     agg_fa_fp_tests_fp = res_dir / "agg_fa_fp_tests.csv"
@@ -688,7 +741,8 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
     
     logger.info(
         f"Starting pipeline with {len(tic_jobs)} TICs, {num_processes} processes, "
-        f"lc_source={lc_source}, delete_lc_after_target={delete_lc_after_target}"
+        f"lc_source={lc_source}, delete_lc_after_target={delete_lc_after_target}, "
+        f"use_all_observed_sectors={use_all_observed_sectors}"
     )
     
     completed_tces = 0
@@ -978,6 +1032,12 @@ if __name__ == "__main__":
         help="Seconds to wait for a single TIC worker before recording it as timed-out and moving on. 0 means no timeout. Default: 600.",
     )
 
+    parser.add_argument(
+        "--use_all_observed_sectors",
+        action="store_true",
+        help="Ignore sectors_observed from the input table and process using all sectors returned by the light-curve query (no pre-query pass).",
+    )
+
     args = parser.parse_args()
     
     with open(args.run_config, 'r') as file:
@@ -988,5 +1048,6 @@ if __name__ == "__main__":
     
     run_pipeline(args.tce_table, decision_thresholds, save_lc_dir=args.lc_dir, res_dir=args.run_dir, lc_source=args.lc_source, delete_lc_after_target=args.delete_lc_after_target,
                  plot_modshift_flag=args.plot_modshift_flag, plot_summary_flag=args.plot_summary_flag, num_processes=args.num_processes, additional_metadata=additional_metadata, 
-                 query_tic=args.query_tic_catalog, aggregate_checkpoint_tces=args.aggregate_checkpoint_tces, verbose=args.verbose, tic_timeout=args.tic_timeout)
+                 query_tic=args.query_tic_catalog, aggregate_checkpoint_tces=args.aggregate_checkpoint_tces, verbose=args.verbose, tic_timeout=args.tic_timeout,
+                 use_all_observed_sectors=args.use_all_observed_sectors)
     
