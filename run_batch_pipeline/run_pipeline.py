@@ -32,7 +32,7 @@ import lightkurve as lk
 import numpy as np
 from astroquery.mast import Catalogs, Observations
 from astroquery.exceptions import RemoteServiceError
-from multiprocessing import Pool, Manager
+from multiprocessing import Pool
 from tqdm import tqdm
 import logging
 import time
@@ -40,6 +40,7 @@ import yaml
 from requests.exceptions import RequestException
 from urllib3.exceptions import HTTPError
 import csv
+import shutil
 
 from leo_vetter.stellar import quadratic_ldc
 from leo_vetter.main import TCELightCurve
@@ -56,16 +57,7 @@ TCE_STELLAR_COLUMNS = ["tic_smass", "tic_smass_err", "tic_sradius", "tic_sradius
 LC_SOURCE_OPTIONS = ("2min", "ffi")
 REMOTE_RETRY_ATTEMPTS = 4
 REMOTE_RETRY_BASE_DELAY_SECONDS = 2.0
-MAX_MAST_CONCURRENT_QUERIES = 4  # max simultaneous MAST API/download calls across all workers
 
-# Per-worker semaphore set by pool initializer; None when running outside a pool
-_mast_semaphore = None
-
-
-def _worker_init(semaphore):
-    """Pool initializer: store the shared MAST semaphore as a process-global."""
-    global _mast_semaphore
-    _mast_semaphore = semaphore
 STELLAR_DEFAULTS = {
     "rad": 1.0,
     "mass": 1.0,
@@ -275,8 +267,10 @@ def get_cached_lc_files(tic, sector_numbers, save_lc_dir, lc_source):
 
 
 def cleanup_cached_lc_files_for_tic(tic, save_lc_dir, lc_source, lc_files_to_cleanup=None):
-    """Delete cached light-curve files for a TIC.
+    """Delete cached light-curve files and their parent directories for a TIC.
 
+    MAST downloads create a directory per product with the FITS file inside.
+    This deletes both the files and their parent directories.
     Uses both explicitly tracked files and a full TIC cache scan so cleanup still
     works when failures happen before files are tracked.
     """
@@ -289,10 +283,18 @@ def cleanup_cached_lc_files_for_tic(tic, save_lc_dir, lc_source, lc_files_to_cle
         # Cleanup should be best-effort and never break TIC processing.
         pass
 
-    for lc_file in sorted(files_to_delete):
+    # Delete parent directories (MAST creates a dir per product with the FITS file inside)
+    dirs_to_delete = set()
+    for lc_file in files_to_delete:
+        parent = lc_file.parent
+        if parent.exists() and parent != save_lc_dir:
+            dirs_to_delete.add(parent)
+
+    for lc_dir in sorted(dirs_to_delete):
         try:
-            lc_file.unlink(missing_ok=True)
-        except OSError:
+            shutil.rmtree(lc_dir, ignore_errors=True)
+        except Exception:
+            # Best-effort; don't fail TIC processing if cleanup fails
             pass
 
 
@@ -342,51 +344,44 @@ def get_lc_data(tic, sectors_observed, save_lc_dir, lc_source):
                 'target_name': tic,
                 'obs_collection': 'TESS',
             }
-        # Limit concurrent MAST API calls across workers to avoid server-side throttling.
-        if _mast_semaphore is not None:
-            _mast_semaphore.acquire()
-        try:
-            obs_table = retry_remote_call(
-                lambda: Observations.query_criteria(**query_kwargs),
-                f"MAST observation query for TIC {tic} ({lc_source})",
-            )
-            if len(obs_table) == 0:
-                raise ValueError(f'No observations found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
-            # get table with all available products for queried observations
-            products = retry_remote_call(
-                lambda: Observations.get_product_list(obs_table),
-                f"MAST product list query for TIC {tic} ({lc_source})",
-            )
+        obs_table = retry_remote_call(
+            lambda: Observations.query_criteria(**query_kwargs),
+            f"MAST observation query for TIC {tic} ({lc_source})",
+        )
+        if len(obs_table) == 0:
+            raise ValueError(f'No observations found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
+        # get table with all available products for queried observations
+        products = retry_remote_call(
+            lambda: Observations.get_product_list(obs_table),
+            f"MAST product list query for TIC {tic} ({lc_source})",
+        )
 
-            if len(products) == 0:
-                raise ValueError(f'No products found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
+        if len(products) == 0:
+            raise ValueError(f'No products found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
 
-            # Apply sector filtering only if sectors_numbers is not None
-            product_filenames = products['productFilename']
-            if sectors_numbers is not None:
-                sector_strings = [f'-s{str(sector).zfill(4)}' for sector in sectors_numbers]
-                mask = [
-                    fn.endswith('lc.fits') and
-                    'fast-lc' not in fn and
-                    any(sector_str in fn for sector_str in sector_strings)
-                    for fn in product_filenames
-                ]
-            else:
-                # No sector filtering - get all light curves
-                mask = [
-                    fn.endswith('lc.fits') and
-                    'fast-lc' not in fn
-                    for fn in product_filenames
-                ]
+        # Apply sector filtering only if sectors_numbers is not None
+        product_filenames = products['productFilename']
+        if sectors_numbers is not None:
+            sector_strings = [f'-s{str(sector).zfill(4)}' for sector in sectors_numbers]
+            mask = [
+                fn.endswith('lc.fits') and
+                'fast-lc' not in fn and
+                any(sector_str in fn for sector_str in sector_strings)
+                for fn in product_filenames
+            ]
+        else:
+            # No sector filtering - get all light curves
+            mask = [
+                fn.endswith('lc.fits') and
+                'fast-lc' not in fn
+                for fn in product_filenames
+            ]
 
-            lc_products = products[mask]
-            if len(lc_products) == 0:
-                raise ValueError(f'No TESS light curve files found for TIC {tic} in {lc_source} data. Skipping.')
+        lc_products = products[mask]
+        if len(lc_products) == 0:
+            raise ValueError(f'No TESS light curve files found for TIC {tic} in {lc_source} data. Skipping.')
 
-            _ = Observations.download_products(lc_products, download_dir=str(save_lc_dir), mrp_only=False)
-        finally:
-            if _mast_semaphore is not None:
-                _mast_semaphore.release()
+        _ = Observations.download_products(lc_products, download_dir=str(save_lc_dir), mrp_only=False)
 
         local_lc_files = get_cached_lc_files(tic, sectors_numbers, save_lc_dir, lc_source)
 
@@ -469,7 +464,7 @@ def get_stellar_parameters_for_tic(tic, tic_data=None, query_tic=False):
 
     return star
 
-def generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, planetno=1):
+def generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, planetno=1, verbose=False):
     """Generates metrics for the TCE.
 
     :param int tic_id: TIC ID
@@ -480,6 +475,7 @@ def generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, planetno=1):
     :param dict tic_params: target stellar parameters
     # :param Path metrics_save_fp: filepath used to save metrics CSV file
     :param int planetno: SPOC planet number, defaults to 1
+    :param bool verbose: whether to print verbose output, defaults to False
     :return TCELightCurve: TCE object
     """
     
@@ -487,7 +483,7 @@ def generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, planetno=1):
         
     tlc = TCELightCurve(tic_id, time, raw, flux, flux_err, per, epo, dur, planetno=planetno)
         
-    tlc.compute_flux_metrics(tic_params, verbose=True)
+    tlc.compute_flux_metrics(tic_params, verbose=verbose)
     
     # tlc.save_metrics(save_file=metrics_save_fp)
     
@@ -622,7 +618,7 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
             dur = tce_data["tce_duration"]
             planetno = tce_data["tce_plnt_num"]
 
-            tlc_tce = generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, planetno=planetno)
+            tlc_tce = generate_tce_metrics(tic_id, per, epo, dur, lc_tic, tic_params, planetno=planetno, verbose=verbose)
             tlc_tce.metrics['uid'] = tce_uid
 
             tlc_tcelst.append(tlc_tce)
@@ -687,7 +683,8 @@ def read_tce_table(tce_tbl_fp, get_stellar_parameters_tic_from_table=False):
     
     return tce_tbl
 
-def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_source="2min", delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, num_processes=4, additional_metadata=None, query_tic=False, aggregate_checkpoint_tces=0, verbose=False, tic_timeout=600, use_all_observed_sectors=False):
+def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_source="2min", delete_lc_after_target=False, plot_modshift_flag=False, plot_summary_flag=False, num_processes=4, 
+                 additional_metadata=None, query_tic=False, aggregate_checkpoint_tces=0, verbose=False, tic_timeout=600, use_all_observed_sectors=False):
     """Runs the LEO-vetter pipeline for a batch of TCEs specified in a TCE table CSV file.
     
     :param Path tce_tbl_fp: filepath to TCE table CSV file
@@ -784,9 +781,7 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
     
     completed_tces = 0
     last_checkpoint_tces = 0
-    _mast_manager = Manager()
-    mast_semaphore = _mast_manager.Semaphore(MAX_MAST_CONCURRENT_QUERIES)
-    with Pool(processes=num_processes, initializer=_worker_init, initargs=(mast_semaphore,)) as pool, tqdm(total=len(tic_jobs), desc='Processing TICs', unit='TIC') as pbar:
+    with Pool(processes=num_processes) as pool, tqdm(total=len(tic_jobs), desc='Processing TICs', unit='TIC') as pbar:
 
         pending_results = {}
         tic_jobs_iter = iter(tic_jobs)
@@ -866,8 +861,6 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
 
             if pending_results:
                 time.sleep(1)
-
-    _mast_manager.shutdown()
 
     if aggregate_checkpoint_tces > 0:
         logger.info("Final aggregate/cleanup pass after pipeline completion")
