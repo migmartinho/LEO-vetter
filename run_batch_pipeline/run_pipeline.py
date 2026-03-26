@@ -25,13 +25,14 @@ warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 # imports
 import argparse
+import itertools
 import pandas as pd
 from pathlib import Path
 import lightkurve as lk
 import numpy as np
 from astroquery.mast import Catalogs, Observations
 from astroquery.exceptions import RemoteServiceError
-from multiprocessing import Pool
+from multiprocessing import Pool, Manager
 from tqdm import tqdm
 import logging
 import time
@@ -55,6 +56,16 @@ TCE_STELLAR_COLUMNS = ["tic_smass", "tic_smass_err", "tic_sradius", "tic_sradius
 LC_SOURCE_OPTIONS = ("2min", "ffi")
 REMOTE_RETRY_ATTEMPTS = 4
 REMOTE_RETRY_BASE_DELAY_SECONDS = 2.0
+MAX_MAST_CONCURRENT_QUERIES = 4  # max simultaneous MAST API/download calls across all workers
+
+# Per-worker semaphore set by pool initializer; None when running outside a pool
+_mast_semaphore = None
+
+
+def _worker_init(semaphore):
+    """Pool initializer: store the shared MAST semaphore as a process-global."""
+    global _mast_semaphore
+    _mast_semaphore = semaphore
 STELLAR_DEFAULTS = {
     "rad": 1.0,
     "mass": 1.0,
@@ -331,45 +342,52 @@ def get_lc_data(tic, sectors_observed, save_lc_dir, lc_source):
                 'target_name': tic,
                 'obs_collection': 'TESS',
             }
-        obs_table = retry_remote_call(
-            lambda: Observations.query_criteria(**query_kwargs),
-            f"MAST observation query for TIC {tic} ({lc_source})",
-        )
-        if len(obs_table) == 0:
-            raise ValueError(f'No observations found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
-        # get table with all available products for queried observations
-        products = retry_remote_call(
-            lambda: Observations.get_product_list(obs_table),
-            f"MAST product list query for TIC {tic} ({lc_source})",
-        )
+        # Limit concurrent MAST API calls across workers to avoid server-side throttling.
+        if _mast_semaphore is not None:
+            _mast_semaphore.acquire()
+        try:
+            obs_table = retry_remote_call(
+                lambda: Observations.query_criteria(**query_kwargs),
+                f"MAST observation query for TIC {tic} ({lc_source})",
+            )
+            if len(obs_table) == 0:
+                raise ValueError(f'No observations found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
+            # get table with all available products for queried observations
+            products = retry_remote_call(
+                lambda: Observations.get_product_list(obs_table),
+                f"MAST product list query for TIC {tic} ({lc_source})",
+            )
 
-        if len(products) == 0:
-            raise ValueError(f'No products found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
+            if len(products) == 0:
+                raise ValueError(f'No products found for TIC {tic} at the MAST for {lc_source} data. Skipping.')
 
-        # Apply sector filtering only if sectors_numbers is not None
-        product_filenames = products['productFilename']
-        if sectors_numbers is not None:
-            sector_strings = [f'-s{str(sector).zfill(4)}' for sector in sectors_numbers]
-            mask = [
-                fn.endswith('lc.fits') and 
-                'fast-lc' not in fn and 
-                any(sector_str in fn for sector_str in sector_strings)
-                for fn in product_filenames
-            ]
-        else:
-            # No sector filtering - get all light curves
-            mask = [
-                fn.endswith('lc.fits') and 
-                'fast-lc' not in fn
-                for fn in product_filenames
-            ]
-        
-        lc_products = products[mask]
-        if len(lc_products) == 0:
-            raise ValueError(f'No TESS light curve files found for TIC {tic} in {lc_source} data. Skipping.')
-        
-        _ = Observations.download_products(lc_products, download_dir=str(save_lc_dir), mrp_only=False)
-        
+            # Apply sector filtering only if sectors_numbers is not None
+            product_filenames = products['productFilename']
+            if sectors_numbers is not None:
+                sector_strings = [f'-s{str(sector).zfill(4)}' for sector in sectors_numbers]
+                mask = [
+                    fn.endswith('lc.fits') and
+                    'fast-lc' not in fn and
+                    any(sector_str in fn for sector_str in sector_strings)
+                    for fn in product_filenames
+                ]
+            else:
+                # No sector filtering - get all light curves
+                mask = [
+                    fn.endswith('lc.fits') and
+                    'fast-lc' not in fn
+                    for fn in product_filenames
+                ]
+
+            lc_products = products[mask]
+            if len(lc_products) == 0:
+                raise ValueError(f'No TESS light curve files found for TIC {tic} in {lc_source} data. Skipping.')
+
+            _ = Observations.download_products(lc_products, download_dir=str(save_lc_dir), mrp_only=False)
+        finally:
+            if _mast_semaphore is not None:
+                _mast_semaphore.release()
+
         local_lc_files = get_cached_lc_files(tic, sectors_numbers, save_lc_dir, lc_source)
 
     lcs = lk.LightCurveCollection([lk.read(local_lc_file) for local_lc_file in local_lc_files])
@@ -766,20 +784,33 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
     
     completed_tces = 0
     last_checkpoint_tces = 0
-    with Pool(processes=num_processes) as pool, tqdm(total=len(tic_jobs), desc='Processing TICs', unit='TIC') as pbar:
+    _mast_manager = Manager()
+    mast_semaphore = _mast_manager.Semaphore(MAX_MAST_CONCURRENT_QUERIES)
+    with Pool(processes=num_processes, initializer=_worker_init, initargs=(mast_semaphore,)) as pool, tqdm(total=len(tic_jobs), desc='Processing TICs', unit='TIC') as pbar:
 
         pending_results = {}
-        for tic_job in tic_jobs:
-            async_result = pool.apply_async(
-                process_tic, 
+        tic_jobs_iter = iter(tic_jobs)
+
+        def _submit_next():
+            """Submit the next job from the queue if one is available."""
+            tic_job = next(tic_jobs_iter, None)
+            if tic_job is None:
+                return
+            ar = pool.apply_async(
+                process_tic,
                 args=(*tic_job, decision_thresholds, save_lc_dir, lc_source, delete_lc_after_target, plot_modshift_flag, plot_summary_flag, plot_modshift_save_dir, plot_summary_save_dir, metrics_save_dir, fa_fp_tests_save_dir, query_tic, verbose),
             )
-            pending_results[async_result] = time.time()
+            pending_results[ar] = (time.time(), tic_job[0])  # (start_time, tic_id)
+
+        # Prime the pool with up to num_processes jobs so start_time reflects
+        # actual execution start rather than queue-submission time.
+        for _ in range(min(num_processes, len(tic_jobs))):
+            _submit_next()
 
         while pending_results:
             finished_results = []
 
-            for async_result, start_time in list(pending_results.items()):
+            for async_result, (start_time, tic_id_for_result) in list(pending_results.items()):
                 result = None
 
                 if async_result.ready():
@@ -791,7 +822,7 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
                             error,
                         )
                         result = {
-                            "tic_id": None,
+                            "tic_id": tic_id_for_result,
                             "status": "failed",
                             "processed_tces": 0,
                             "failed_sector_runs": 0,
@@ -803,7 +834,7 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
                         tic_timeout,
                     )
                     result = {
-                        "tic_id": None,
+                        "tic_id": tic_id_for_result,
                         "status": "timeout",
                         "processed_tces": 0,
                         "failed_sector_runs": 0,
@@ -812,6 +843,10 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
 
                 if result is None:
                     continue
+
+                # A slot freed up — submit the next queued job immediately so
+                # its start_time is recorded close to when it will execute.
+                _submit_next()
 
                 finished_results.append(async_result)
                 pipeline_results.append(result)
@@ -831,6 +866,8 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
 
             if pending_results:
                 time.sleep(1)
+
+    _mast_manager.shutdown()
 
     if aggregate_checkpoint_tces > 0:
         logger.info("Final aggregate/cleanup pass after pipeline completion")

@@ -220,3 +220,5 @@ python run_batch_pipeline/run_aggregate_results.py \
 
 7. Problem: MAST is down (you see no light curve files being downloaded and run seems to hang/timeout per TIC is reached)
 	Fix: wait until it comes back up or use local target light curve FITS files and add your own stellar parameters to the TCE input table.
+
+8. Problem: TICs are being skipped and output log shows messages such as `A TIC worker timed out after X seconds`. The process cannot finish the job for that TIC. Check your network connection, access to MAST, and how much time it takes to download the light curve data. Decreasing the number of processes being used in parallel and `MAX_MAST_CONCURRENT_QUERIES` in [run_batch_pipeline/run_pipeline.py](/run_batch_pipeline/run_pipeline.py) can help.
