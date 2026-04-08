@@ -632,20 +632,48 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
             if plot_summary_flag:
                 plot_summary(tlc_tce, tic_params, save_fig=plot_summary_flag, save_file=plot_summary_save_dir / f"summary_tic{tic_id}_tce{tce_uid}.png")
 
-    # save FA/FP threshold tests for target's TCEs
-    fa_fp_tests_df_tic_lst = [df for df in fa_fp_tests_df_tic_lst if df is not None]
-    if fa_fp_tests_df_tic_lst:
-        fa_fp_tests_df_tic_df = pd.concat(fa_fp_tests_df_tic_lst, axis=0)
-        fa_fp_tests_df_tic_df.to_csv(fa_fp_tests_save_dir / f"fa_fp_tests_tic{tic_id}.csv", index=False)
-    
-    # save metrics for target's TCEs
-    metrics_tic_df = metrics_save_dir / f"metrics_tic{tic_id}.csv"
-    with open(metrics_tic_df, "w") as f:
-        writer = csv.writer(f, delimiter=",")
-        for tce_i, tlc_tce in enumerate(tlc_tcelst):
-            if tce_i == 0:
-                writer.writerow(tlc_tce.metrics.keys())
-            writer.writerow(tlc_tce.metrics.values())
+    # if len(tlc_tcelst) == 0:
+    #     logger.warning(f"No TCEs were successfully processed for TIC {tic_id} in any sector run. TIC will be marked as failed.")
+    #     no_tces = True
+    # if len(fa_fp_tests_df_tic_lst) == 0:
+    #     logger.warning(f"No FA/FP tests were successfully generated for TIC {tic_id} in any sector run. TIC will be marked as partial failure.")
+    #     no_fa_fp_tests = True  
+    # if not no_fa_fp_tests and not no_tces:
+    try:
+        saved_metrics_tic, saved_fa_fp_tests_tic = False, False
+        
+        # save metrics for target's TCEs
+        if len(tlc_tcelst) > 0:
+            metrics_tic_df = metrics_save_dir / f"metrics_tic{tic_id}.csv"
+            with open(metrics_tic_df, "w") as f:
+                writer = csv.writer(f, delimiter=",")
+                for tce_i, tlc_tce in enumerate(tlc_tcelst):
+                    if tce_i == 0:
+                        writer.writerow(tlc_tce.metrics.keys())
+                    writer.writerow(tlc_tce.metrics.values())
+            
+            saved_metrics_tic = True
+                
+        # save FA/FP threshold tests for target's TCEs
+        fa_fp_tests_df_tic_lst = [df for df in fa_fp_tests_df_tic_lst if df is not None]
+        if fa_fp_tests_df_tic_lst:
+            fa_fp_tests_df_tic_df = pd.concat(fa_fp_tests_df_tic_lst, axis=0)
+            fa_fp_tests_df_tic_df.to_csv(fa_fp_tests_save_dir / f"fa_fp_tests_tic{tic_id}.csv", index=False)
+        
+            saved_fa_fp_tests_tic = True
+        
+    except Exception as error:
+        if not saved_metrics_tic:  # if metrics failed to save, we consider the whole TIC a failure and delete any partial outputs
+            logger.exception(
+                "Failed to save metrics for TIC %s", tic_id
+            )
+            metrics_tic_df.unlink(missing_ok=True)
+            (fa_fp_tests_save_dir / f"fa_fp_tests_tic{tic_id}.csv").unlink(missing_ok=True)
+        if not saved_fa_fp_tests_tic:  # if FA/FP tests failed to save, we consider it a partial failure and only delete the FA/FP tests output
+            logger.exception(
+                "Failed to save FA/FP tests for TIC %s", tic_id
+            )
+            (fa_fp_tests_save_dir / f"fa_fp_tests_tic{tic_id}.csv").unlink(missing_ok=True)
 
     if delete_lc_after_target:
         cleanup_cached_lc_files_for_tic(tic_id, save_lc_dir, lc_source, lc_files_to_cleanup)
@@ -823,18 +851,17 @@ def run_pipeline(tce_tbl_fp, decision_thresholds, save_lc_dir, res_dir, lc_sourc
                             "failed_sector_runs": 0,
                             "error": str(error),
                         }
-                elif tic_timeout and (time.time() - start_time) > tic_timeout:
-                    logger.error(
-                        "A TIC worker timed out after %s seconds and will be recorded as failed.",
-                        tic_timeout,
-                    )
-                    result = {
-                        "tic_id": tic_id_for_result,
-                        "status": "timeout",
-                        "processed_tces": 0,
-                        "failed_sector_runs": 0,
-                        "error": f"timed out after {tic_timeout}s",
-                    }
+                # elif tic_timeout and (time.time() - start_time) > tic_timeout:
+                #     logger.error(
+                #         f"A TIC worker timed out after {tic_timeout} seconds and will be recorded as failed: start {start_time}, end {time.time()}."
+                #     )
+                #     result = {
+                #         "tic_id": tic_id_for_result,
+                #         "status": "timeout",
+                #         "processed_tces": 0,
+                #         "failed_sector_runs": 0,
+                #         "error": f"timed out after {tic_timeout}s",
+                #     }
 
                 if result is None:
                     continue

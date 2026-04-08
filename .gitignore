@@ -17,3 +17,4 @@ data/
 run_batch_pipeline/local/
 run_batch_pipeline/example/test*
 run_batch_pipeline/example/lc_files/
+local/
