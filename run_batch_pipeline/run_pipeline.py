@@ -313,6 +313,8 @@ def get_lc_data(tic, sectors_observed, save_lc_dir, lc_source):
     local_lc_files = get_cached_lc_files(tic, sectors_numbers, save_lc_dir, lc_source)
 
     if len(local_lc_files) == 0:
+        # TODO: temporarily disable MAST download in favor of manual download until we can implement robust retry logic and cleanup to handle MAST instability issues
+        raise ValueError(f'No download permitted. TIC {tic}')
         # lcs = lk.LightCurveCollection([lk.read(local_lc_file) for local_lc_file in local_lc_files])
     # else:
         # author = "SPOC" if lc_source == "2min" else "TESS-SPOC"
