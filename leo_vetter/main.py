@@ -103,6 +103,7 @@ class TCELightCurve:
         phase_sorted = phase[phase_sorted_idxs]
         dur_per_frac_half = 0.5 * self.qtran
         for i in np.arange(N):
+            
             # time is sorted
             while left_idx < N and self.time[left_idx] < time_diff_dur_minus[i]:
                 left_idx += 1
@@ -112,54 +113,38 @@ class TCELightCurve:
                 right_idx += 1
             
             n_SES[i] = right_idx - left_idx
-            dep_SES[i] = self.zpt - weighted_mean(
-                self.flux[left_idx:right_idx], self.flux_err[left_idx:right_idx]
-            )
+            dep_SES[i] = self.zpt - weighted_mean(self.flux[left_idx:right_idx], self.flux_err[left_idx:right_idx])
             
             # in_bin = (left_idx < np.arange(N)) & (np.arange(N) < right_idx) & ~self.near_tran
             mask_near_tran = ~self.near_tran[left_idx:right_idx]
             
-            # Get individual transit depth at this cadence, i.e. only use datapoints close in time
-            # in_tran = abs(self.time - self.time[i]) < 0.5 * self.dur
-            # n_SES[i] = np.sum(in_tran)
-            # dep_SES[i] = self.zpt - weighted_mean(
-            #     self.flux[in_tran], self.flux_err[in_tran]
-            # )
-            
             # find indices within +- range from the current phase index
-            left_p = np.searchsorted(phase_sorted, phase[i] - dur_per_frac_half, side='left')
-            right_p = np.searchsorted(phase_sorted, phase[i] + dur_per_frac_half, side='right')
-            # also check for wrap around in phase
-            left_p_wrap = np.searchsorted(phase_sorted, phase[i] - dur_per_frac_half + 1, side='left')
-            right_p_wrap = np.searchsorted(phase_sorted, phase[i] + dur_per_frac_half + 1, side='right')
+            left_p  = np.searchsorted(phase_sorted, phase[i] - dur_per_frac_half, side='right')
+            right_p = np.searchsorted(phase_sorted, phase[i] + dur_per_frac_half, side='left')
+            idx_window = phase_sorted_idxs[left_p:right_p]
+
+            left_p_wrap  = np.searchsorted(phase_sorted, phase[i] - dur_per_frac_half + 1.0, side='right')
+            right_p_wrap = np.searchsorted(phase_sorted, phase[i] + dur_per_frac_half + 1.0, side='left')
+            # wrap_mask = (phase_sorted > (phase[i] + dur_per_frac_half - 1)) | (phase_sorted < (phase[i] - dur_per_frac_half + 1))            
+            idx_window_wrap = phase_sorted_idxs[left_p_wrap:right_p_wrap]
+            # idx_window_wrap = phase_sorted_idxs[np.where(wrap_mask)[0]]
+
+            # combine the two windows
+            all_tran_idxs = np.concatenate((idx_window, idx_window_wrap))
             
-            n_MES[i] = (right_p - left_p) + (right_p_wrap - left_p_wrap)
-            dep_MES[i] = self.zpt - weighted_mean(
-                np.concatenate((self.flux[phase_sorted_idxs[left_p:right_p]], self.flux[phase_sorted_idxs[left_p_wrap:right_p_wrap]])),
-                np.concatenate((self.flux_err[phase_sorted_idxs[left_p:right_p]], self.flux_err[phase_sorted_idxs[left_p_wrap:right_p_wrap]]))
-            )
-            
-            tran_epochs = np.unique(np.concatenate((self.epochs[phase_sorted_idxs[left_p:right_p]], 
-                                                    self.epochs[phase_sorted_idxs[left_p_wrap:right_p_wrap]])))
+            n_MES[i] = len(all_tran_idxs)
+            dep_MES[i] = self.zpt - weighted_mean(self.flux[all_tran_idxs], self.flux_err[all_tran_idxs])
             
             bin_flux[i] = weighted_mean(self.flux[left_idx:right_idx][mask_near_tran], self.flux_err[left_idx:right_idx][mask_near_tran])
             bin_flux_err[i] = weighted_err(self.flux[left_idx:right_idx][mask_near_tran], self.flux_err[left_idx:right_idx][mask_near_tran])
             
-            # # Get overall transit depth at this cadence, i.e. use all datapoints close in phase
-            # all_tran = (abs(phase - phase[i]) < 0.5 * self.qtran) | (
-            #     abs(phase - phase[i]) > 1 - 0.5 * self.qtran
-            # )
-            # n_MES[i] = np.sum(all_tran)
-            # dep_MES[i] = self.zpt - weighted_mean(
-            #     self.flux[all_tran], self.flux_err[all_tran]
-            # )
-            # epochs = np.round((self.time - self.time[i]) / self.per)
-            # tran_epochs = np.unique(epochs[all_tran])
-            N_transit_MES[i] = len(tran_epochs)
-            # Get running mean and uncertainty of out-of-transit fluxes, binned over transit timescale
-            # in_bin = in_tran & ~self.near_tran
-            # bin_flux[i] = weighted_mean(self.flux[in_bin], self.flux_err[in_bin])
-            # bin_flux_err[i] = weighted_err(self.flux[in_bin], self.flux_err[in_bin])
+            all_tran_time = self.time[all_tran_idxs]
+            # compute local epochs relative to current timestamp
+            local_epochs = np.round((all_tran_time - self.time[i]) / self.per)
+
+            # Count distinct epochs as original code does
+            N_transit_MES[i] = len(np.unique(local_epochs))
+            
         # Estimate white and red noise following Hartman & Bakos (2016)
         mask = ~np.isnan(bin_flux) & ~self.near_tran
         std = weighted_std(self.flux[mask], self.flux_err[mask])
