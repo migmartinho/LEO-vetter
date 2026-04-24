@@ -7,7 +7,7 @@ LC_SOURCE=2min  # 2min, ffi
 TCE_TABLE=/path/to/tce_table.csv
 NUM_PROCESSES=1
 AGG_CHECKPT_TCES=2
-LOG_FP=$RUN_DIR/run_output.txt
+LOG_FP=$RUN_DIR/run_output_$(date +%Y-%m-%d_%H%M%S).txt
 export PYTHONPATH=/path/to/leo-vetter/codebase
 
 mkdir -p $RUN_DIR

@@ -705,8 +705,6 @@ def read_tce_table(tce_tbl_fp, get_stellar_parameters_tic_from_table=False):
         tce_tbl = tce_tbl.rename(columns=MAP_STELLAR_TCE_TABLE_NAMES)
     else:
         tce_tbl = pd.read_csv(tce_tbl_fp, usecols=TCE_COLUMNS, on_bad_lines='skip', engine='python', dtype={'sectors_observed': str})
-
-    tce_tbl = tce_tbl.loc[tce_tbl['uid'] == '229685063-1-S14-41']
     
     tce_tbl = tce_tbl.rename(columns={"target_id": "tic"})
     tce_tbl['tce_duration'] = tce_tbl['tce_duration'] / 24. # convert duration from hours to days
