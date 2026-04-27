@@ -584,7 +584,7 @@ def process_tic(tic_id, tic_data, decision_thresholds, save_lc_dir, lc_source, d
                 "error": str(error),
             }
     
-    for sector_run, tic_data_sector_run in tqdm(tic_data.groupby('sector_run'), desc=f'Processing TIC {tic_id}', unit='sector run', total=tic_data["sector_run"].nunique()):
+    for sector_run, tic_data_sector_run in tqdm(tic_data.groupby('sector_run'), desc=f'Processing TIC {tic_id} in sector run', unit='sector run', total=tic_data["sector_run"].nunique()):
 
         sectors_observed = tic_data_sector_run["sectors_observed"].iloc[0]
 
